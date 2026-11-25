@@ -76,7 +76,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Install npm dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Run engine & multiplayer tests
         run: npm test
