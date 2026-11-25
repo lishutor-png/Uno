@@ -1,0 +1,25 @@
+<!-- Izin & konfigurasi AndroidManifest.xml untuk UNO Arena -->
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+<uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+
+<!-- Izin Wi-Fi Direct: Android 13+ (API 33+) memakai NEARBY_WIFI_DEVICES, Android 6-12 memakai FINE/COARSE LOCATION -->
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="32" />
+<uses-permission
+    android:name="android.permission.NEARBY_WIFI_DEVICES"
+    android:usesPermissionFlags="neverForLocation" />
+
+<!-- Izin kamera untuk Scan QR Code -->
+<uses-permission android:name="android.permission.CAMERA" />
+
+<uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
+<uses-feature android:name="android.hardware.camera" android:required="false" />
+
+<!-- Pada <application ...> izinkan trafik ws:// lokal (LAN / Wi-Fi Direct offline tanpa TLS publik) -->
+<!-- android:usesCleartextTraffic="true" -->
+
+<!-- Pada <activity MainActivity ...> pertahankan state game saat pindah orientasi Portrait <-> Landscape: -->
+<!-- android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode" -->
+<!-- android:screenOrientation="unspecified" -->

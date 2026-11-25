@@ -1,0 +1,6 @@
+// Tambahkan dependency berikut ke android/app/build.gradle (atau build.gradle.kts)
+// di dalam blok dependencies { ... }
+
+dependencies {
+    implementation("org.java-websocket:Java-WebSocket:1.5.7")
+}

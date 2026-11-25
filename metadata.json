@@ -1,0 +1,8 @@
+{
+  "name": "UNO Arena",
+  "description": "Permainan kartu UNO offline untuk Android dengan mode Single Player melawan BOT cerdas dan arsitektur modular siap Multiplayer Wi-Fi LAN & Wi-Fi Direct.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
