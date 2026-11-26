@@ -93,6 +93,9 @@ export interface UnoOrientationPluginInterface {
   setOrientation(options: {
     mode: 'portrait' | 'landscape' | 'auto';
   }): Promise<{ applied: boolean; mode: string }>;
+  setFullscreen?(options: {
+    enabled: boolean;
+  }): Promise<{ applied: boolean; enabled: boolean }>;
 }
 
 interface CapacitorGlobal {

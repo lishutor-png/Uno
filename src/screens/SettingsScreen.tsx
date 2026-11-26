@@ -6,6 +6,7 @@ import {
   OrientationPreference,
   UserPreferences,
 } from '../storage/types';
+import { useFullscreen } from '../utilities/fullscreenManager';
 import { DIFFICULTY_LABELS_ID, formatDuration } from '../utilities/cardHelpers';
 
 interface SettingsScreenProps {
@@ -23,6 +24,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onClearHistory,
   onBack,
 }) => {
+  const { isFullscreen, canToggleFullscreen, toggleFullscreen } =
+    useFullscreen();
   return (
     <div className="w-full h-full overflow-y-auto bg-gradient-to-br from-[#072e1e] via-[#041d13] to-[#02100a] px-4 sm:px-8 py-4 sm:py-6 safe-pt safe-pb flex flex-col">
       <div className="flex items-center justify-between max-w-5xl w-full mx-auto mb-4">
@@ -89,6 +92,30 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               {preferences.soundEnabled ? 'Nyala' : 'Mati'}
             </button>
           </div>
+
+          {canToggleFullscreen && (
+            <div className="flex items-center justify-between rounded-xl bg-white/5 border border-white/10 px-3.5 py-2.5">
+              <div>
+                <div className="text-sm font-semibold text-white">
+                  Mode Layar Penuh
+                </div>
+                <div className="text-xs text-emerald-100/70">
+                  Sembunyikan status bar &amp; navigasi sistem
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void toggleFullscreen()}
+                className={`min-h-[40px] px-4 rounded-lg font-bold text-xs cursor-pointer ${
+                  isFullscreen
+                    ? 'bg-emerald-400 text-slate-950'
+                    : 'bg-white/10 text-slate-300'
+                }`}
+              >
+                {isFullscreen ? 'Aktif' : 'Normal'}
+              </button>
+            </div>
+          )}
 
           <div>
             <span className="block text-xs font-medium text-emerald-200/80 mb-1.5">

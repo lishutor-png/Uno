@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import {
   BookOpen,
   Gamepad2,
+  Maximize2,
+  Minimize2,
   Settings,
   Users,
   Volume2,
@@ -11,6 +13,7 @@ import { HowToPlayModal } from '../components/HowToPlayModal';
 import { MabarUnoLogo } from '../components/MabarUnoLogo';
 import { UnoMenuHeroIllustration } from '../components/UnoMenuHeroIllustration';
 import { MatchHistoryRecord } from '../storage/types';
+import { useFullscreen } from '../utilities/fullscreenManager';
 import { soundEngine } from '../utilities/soundEngine';
 
 interface MainMenuScreenProps {
@@ -38,6 +41,8 @@ export const MainMenuScreen: React.FC<MainMenuScreenProps> = ({
 }) => {
   const [bgLoaded, setBgLoaded] = useState(true);
   const [showHowToPlay, setShowHowToPlay] = useState(false);
+  const { isFullscreen, canToggleFullscreen, toggleFullscreen } =
+    useFullscreen();
   const wins = matchHistory.filter((m) => m.playerWon).length;
 
   useEffect(() => {
@@ -95,21 +100,46 @@ export const MainMenuScreen: React.FC<MainMenuScreenProps> = ({
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={onToggleSound}
-          aria-label={soundEnabled ? 'Matikan suara' : 'Nyalakan suara'}
-          className="min-w-[48px] min-h-[48px] px-3.5 rounded-xl bg-black/50 hover:bg-black/70 border border-white/15 flex items-center justify-center gap-2 text-xs sm:text-sm font-medium text-white cursor-pointer transition-colors whitespace-nowrap shrink-0"
-        >
-          {soundEnabled ? (
-            <Volume2 className="w-4.5 h-4.5 text-amber-300" />
-          ) : (
-            <VolumeX className="w-4.5 h-4.5 text-slate-400" />
+        <div className="flex items-center gap-2 shrink-0">
+          {canToggleFullscreen && (
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.playButtonTap();
+                void toggleFullscreen();
+              }}
+              aria-label={
+                isFullscreen ? 'Keluar layar penuh' : 'Mode layar penuh'
+              }
+              title={isFullscreen ? 'Keluar Layar Penuh' : 'Layar Penuh'}
+              className="min-w-[48px] min-h-[48px] px-3 rounded-xl bg-black/50 hover:bg-black/70 border border-white/15 flex items-center justify-center gap-1.5 text-xs sm:text-sm font-medium text-white cursor-pointer transition-colors whitespace-nowrap shrink-0"
+            >
+              {isFullscreen ? (
+                <Minimize2 className="w-4.5 h-4.5 text-emerald-300" />
+              ) : (
+                <Maximize2 className="w-4.5 h-4.5 text-emerald-300" />
+              )}
+              <span className="hidden md:inline">
+                {isFullscreen ? 'Normal' : 'Layar Penuh'}
+              </span>
+            </button>
           )}
-          <span className="hidden sm:inline">
-            {soundEnabled ? 'Suara Nyala' : 'Suara Mati'}
-          </span>
-        </button>
+          <button
+            type="button"
+            onClick={onToggleSound}
+            aria-label={soundEnabled ? 'Matikan suara' : 'Nyalakan suara'}
+            className="min-w-[48px] min-h-[48px] px-3.5 rounded-xl bg-black/50 hover:bg-black/70 border border-white/15 flex items-center justify-center gap-2 text-xs sm:text-sm font-medium text-white cursor-pointer transition-colors whitespace-nowrap shrink-0"
+          >
+            {soundEnabled ? (
+              <Volume2 className="w-4.5 h-4.5 text-amber-300" />
+            ) : (
+              <VolumeX className="w-4.5 h-4.5 text-slate-400" />
+            )}
+            <span className="hidden sm:inline">
+              {soundEnabled ? 'Suara Nyala' : 'Suara Mati'}
+            </span>
+          </button>
+        </div>
       </header>
 
       {/* Responsive Portrait (single column stack with hero card fan) & Landscape (2-column) Layout */}

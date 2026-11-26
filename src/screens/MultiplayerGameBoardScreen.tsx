@@ -4,6 +4,8 @@ import {
   ArrowUpDown,
   Layers,
   LogOut,
+  Maximize2,
+  Minimize2,
   RefreshCw,
   Volume2,
   VolumeX,
@@ -29,6 +31,7 @@ import {
 } from '../multiplayer/nativeBridge';
 import { GameActionPayload } from '../multiplayer/types';
 import { HandLayoutMode } from '../storage/types';
+import { useFullscreen } from '../utilities/fullscreenManager';
 import { soundEngine } from '../utilities/soundEngine';
 import {
   FrontPerspectiveTable,
@@ -70,6 +73,8 @@ export const MultiplayerGameBoardScreen: React.FC<
   onExitToMenu,
 }) => {
   const isPortrait = useIsPortrait();
+  const { isFullscreen, canToggleFullscreen, toggleFullscreen } =
+    useFullscreen();
   const [view, setView] = useState<ClientVisibleGameState>(initialView);
   const [clientStatus, setClientStatus] = useState<LanClientState | null>(
     initialClientState ?? null
@@ -362,6 +367,26 @@ export const MultiplayerGameBoardScreen: React.FC<
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              {canToggleFullscreen && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playButtonTap();
+                    void toggleFullscreen();
+                  }}
+                  aria-label={
+                    isFullscreen ? 'Keluar layar penuh' : 'Mode layar penuh'
+                  }
+                  title={isFullscreen ? 'Keluar Layar Penuh' : 'Layar Penuh'}
+                  className="min-w-[48px] min-h-[48px] rounded-xl bg-black/55 hover:bg-black/75 border border-white/15 border-b-2 border-b-black/60 active:translate-y-0.5 flex items-center justify-center text-white cursor-pointer"
+                >
+                  {isFullscreen ? (
+                    <Minimize2 className="w-4.5 h-4.5 text-emerald-300" />
+                  ) : (
+                    <Maximize2 className="w-4.5 h-4.5 text-emerald-300" />
+                  )}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onToggleSound}

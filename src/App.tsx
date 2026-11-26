@@ -36,6 +36,10 @@ import {
 } from './storage/types';
 import { soundEngine } from './utilities/soundEngine';
 import {
+  applyFullscreen,
+  isNativeAndroidRuntime,
+} from './utilities/fullscreenManager';
+import {
   applyScreenOrientation,
   resolveTargetOrientation,
 } from './utilities/orientationManager';
@@ -113,6 +117,12 @@ export default function App() {
   useEffect(() => {
     void applyScreenOrientation(targetOrientation);
   }, [targetOrientation]);
+
+  useEffect(() => {
+    if (isNativeAndroidRuntime()) {
+      void applyFullscreen(true);
+    }
+  }, []);
 
   const updatePreferences = useCallback((partial: Partial<UserPreferences>) => {
     setPreferences((prev) => {
@@ -217,7 +227,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="w-screen h-[100dvh] overflow-hidden bg-[#062417]">
+    <div className="fixed inset-0 w-full h-[100dvh] overflow-hidden bg-[#062417]">
       <LandscapeGuard requiredOrientation={targetOrientation} />
       {screen === 'SPLASH' && (
         <SplashScreen onComplete={() => setScreen('MAIN_MENU')} />

@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUpDown,
   Layers,
+  Maximize2,
+  Minimize2,
   Pause,
   Volume2,
   VolumeX,
@@ -26,6 +28,7 @@ import {
   UnoCard as UnoCardModel,
 } from '../engine/types';
 import { HandLayoutMode } from '../storage/types';
+import { useFullscreen } from '../utilities/fullscreenManager';
 import { soundEngine } from '../utilities/soundEngine';
 import {
   FrontPerspectiveTable,
@@ -58,6 +61,8 @@ export const GameBoardScreen: React.FC<GameBoardScreenProps> = ({
   onExitToMenu,
 }) => {
   const isPortrait = useIsPortrait();
+  const { isFullscreen, canToggleFullscreen, toggleFullscreen } =
+    useFullscreen();
   const [gameState, setGameState] = useState<GameState>(() =>
     createSinglePlayerMatch(config)
   );
@@ -445,6 +450,26 @@ export const GameBoardScreen: React.FC<GameBoardScreenProps> = ({
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              {canToggleFullscreen && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playButtonTap();
+                    void toggleFullscreen();
+                  }}
+                  aria-label={
+                    isFullscreen ? 'Keluar layar penuh' : 'Mode layar penuh'
+                  }
+                  title={isFullscreen ? 'Keluar Layar Penuh' : 'Layar Penuh'}
+                  className="min-w-[48px] min-h-[48px] rounded-xl bg-black/55 hover:bg-black/75 border border-white/15 border-b-2 border-b-black/60 active:translate-y-0.5 flex items-center justify-center text-white cursor-pointer"
+                >
+                  {isFullscreen ? (
+                    <Minimize2 className="w-4.5 h-4.5 text-emerald-300" />
+                  ) : (
+                    <Maximize2 className="w-4.5 h-4.5 text-emerald-300" />
+                  )}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onToggleSound}
