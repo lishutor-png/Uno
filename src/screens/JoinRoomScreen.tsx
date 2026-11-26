@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, LogIn, QrCode, RefreshCw } from 'lucide-react';
+import { ArrowLeft, LogIn, QrCode, RefreshCw, WifiOff } from 'lucide-react';
 import {
   LanClientState,
   LanWebSocketClient,
@@ -40,6 +40,7 @@ export const JoinRoomScreen: React.FC<JoinRoomScreenProps> = ({
   );
 
   const [clientState, setClientState] = useState<LanClientState | null>(null);
+  const [closedNotice, setClosedNotice] = useState<string | null>(null);
   const clientRef = useRef<LanWebSocketClient | null>(null);
   const handedOffRef = useRef(false);
 
@@ -51,7 +52,13 @@ export const JoinRoomScreen: React.FC<JoinRoomScreenProps> = ({
     targetToken: string,
     qrType?: QRConnectionPayload['qrType']
   ) => {
-    clientRef.current?.destroy();
+    setClosedNotice(null);
+    handedOffRef.current = false;
+    if (clientRef.current) {
+      clientRef.current.leaveRoom();
+      clientRef.current.destroy();
+      clientRef.current = null;
+    }
 
     const client = new LanWebSocketClient({
       hostIp: targetIp,
@@ -61,6 +68,13 @@ export const JoinRoomScreen: React.FC<JoinRoomScreenProps> = ({
       roomAuthToken: targetToken,
       qrType,
       playerName,
+      onKickedOrClosed: (reason) => {
+        if (handedOffRef.current) return;
+        setClosedNotice(
+          reason || 'Room selesai atau telah diakhiri oleh Host. Anda siap bergabung ke Room lain.'
+        );
+        clientRef.current = null;
+      },
       onStateChange: (next) => {
         setClientState(next);
         if (next.gameState && next.room && !handedOffRef.current) {
@@ -87,8 +101,10 @@ export const JoinRoomScreen: React.FC<JoinRoomScreenProps> = ({
       );
     }
     return () => {
-      if (!handedOffRef.current) {
-        clientRef.current?.leaveRoom();
+      if (!handedOffRef.current && clientRef.current) {
+        clientRef.current.leaveRoom();
+        clientRef.current.destroy();
+        clientRef.current = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,16 +116,26 @@ export const JoinRoomScreen: React.FC<JoinRoomScreenProps> = ({
   };
 
   const handleDisconnect = () => {
-    clientRef.current?.leaveRoom();
-    clientRef.current = null;
+    handedOffRef.current = false;
+    if (clientRef.current) {
+      clientRef.current.leaveRoom();
+      clientRef.current.destroy();
+      clientRef.current = null;
+    }
+    setClosedNotice(null);
     setClientState(null);
   };
 
   const isAuthenticated = clientState?.status === 'AUTHENTICATED';
+  const isReconnecting =
+    clientState?.status === 'RECONNECTING' ||
+    (clientState?.status === 'DISCONNECTED' &&
+      Boolean(clientState.sessionId) &&
+      !clientState.roomClosedByHost);
   const room: RoomPublicSnapshot | null = clientState?.room ?? null;
 
   return (
-    <div className="w-full h-full overflow-y-auto bg-gradient-to-br from-[#072e1e] via-[#041d13] to-[#02100a] px-4 sm:px-8 py-4 sm:py-6 flex flex-col">
+    <div className="w-full h-full overflow-y-auto bg-gradient-to-br from-[#072e1e] via-[#041d13] to-[#02100a] px-4 sm:px-8 py-4 sm:py-6 safe-pt safe-pb flex flex-col">
       <div className="flex items-center justify-between max-w-4xl w-full mx-auto mb-4">
         <button
           type="button"
@@ -141,11 +167,58 @@ export const JoinRoomScreen: React.FC<JoinRoomScreenProps> = ({
       </div>
 
       <div className="max-w-4xl w-full mx-auto flex-1 flex items-center justify-center">
-        {!isAuthenticated ? (
+        {isReconnecting && clientState ? (
+          <div className="w-full max-w-md rounded-2xl bg-black/45 border border-amber-400/45 p-5 sm:p-6 space-y-4 text-white">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center shrink-0">
+                <WifiOff className="w-5 h-5 text-amber-300" />
+              </div>
+              <div>
+                <h2 className="font-display font-bold text-lg text-amber-300">
+                  Koneksi Terputus
+                </h2>
+                <p className="text-xs text-emerald-100/85">
+                  {clientState.errorMessage || 'Mencoba menghubungkan kembali...'}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => clientRef.current?.reconnectNow()}
+                className="min-h-[46px] w-full rounded-xl bg-amber-400 hover:bg-amber-300 border-b-4 border-amber-600 text-slate-950 font-display font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <RefreshCw
+                  className={`w-4 h-4 ${
+                    clientState.status === 'RECONNECTING' ? 'animate-spin' : ''
+                  }`}
+                />
+                <span>Coba Sambungkan Kembali</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleDisconnect();
+                  onBack();
+                }}
+                className="min-h-[44px] w-full rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold text-white cursor-pointer"
+              >
+                Kembali ke Lobi
+              </button>
+            </div>
+          </div>
+        ) : !isAuthenticated ? (
           <form
             onSubmit={handleConnect}
             className="w-full max-w-lg rounded-2xl bg-black/35 border border-emerald-400/20 p-5 sm:p-6 space-y-4"
           >
+            {closedNotice && (
+              <div className="rounded-xl bg-amber-950/75 border border-amber-400/50 px-3.5 py-2.5 text-xs text-amber-100">
+                {closedNotice}
+              </div>
+            )}
+
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2">
                 <label
@@ -227,7 +300,7 @@ export const JoinRoomScreen: React.FC<JoinRoomScreenProps> = ({
               </div>
             </div>
 
-            {clientState?.errorMessage && (
+            {clientState?.errorMessage && !closedNotice && (
               <div className="rounded-xl bg-red-950/80 border border-red-400/50 px-3.5 py-2.5 text-xs text-red-100">
                 {clientState.errorMessage}
               </div>

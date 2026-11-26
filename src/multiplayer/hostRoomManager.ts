@@ -22,6 +22,7 @@ import {
   HostToClientMessage,
   MultiplayerRoomConfig,
   PlayerSession,
+  RoomLifecycleState,
   RoomParticipantSummary,
   RoomPublicSnapshot,
   SingleGameTokenRecord,
@@ -199,6 +200,7 @@ export class HostRoomManager {
   private connectionToPlayerId = new Map<string, string>();
   private singleGameTokens = new Map<string, SingleGameTokenRecord>();
   private status: RoomPublicSnapshot['status'] = 'LOBBY';
+  private lifecycleState: RoomLifecycleState = 'WAITING';
   private gameState: GameState | null = null;
   private hostPlayerId: string | null = null;
   private stateVersion = 0;
@@ -268,6 +270,34 @@ export class HostRoomManager {
 
   getStateVersion(): number {
     return this.stateVersion;
+  }
+
+  getLifecycleState(): RoomLifecycleState {
+    return this.lifecycleState;
+  }
+
+  setOnHostStateChange(
+    cb?: (room: RoomPublicSnapshot, hostView: ClientVisibleGameState | null) => void
+  ): void {
+    this.onHostStateChange = cb;
+  }
+
+  /**
+   * Called when the Host app returns from background so connected clients are not
+   * falsely timed out while OS timers were suspended, then forces a clean resync.
+   */
+  resetAfterAppResume(now = Date.now()): void {
+    if (this.status === 'CLOSING' || this.status === 'CLOSED') return;
+    let hasRemote = false;
+    for (const sess of this.sessions.values()) {
+      if (!sess.isHost && sess.connected) {
+        sess.lastHeartbeatAt = now;
+        hasRemote = true;
+      }
+    }
+    if (hasRemote) {
+      this.syncAllClients(undefined, true);
+    }
   }
 
   private getDisconnectMeta(): {
@@ -357,6 +387,7 @@ export class HostRoomManager {
       botDifficulty: this.config.botDifficulty,
       rules: this.config.rules,
       status: this.status,
+      lifecycleState: this.lifecycleState,
       participants,
       disconnectedPlayerIds,
     };
@@ -530,10 +561,10 @@ export class HostRoomManager {
     connectionId: string,
     msg: Extract<ClientToHostMessage, { type: 'JOIN_REQUEST' }>
   ): void {
-    if (this.status === 'CLOSED') {
+    if (this.status === 'CLOSING' || this.status === 'CLOSED') {
       this.sendMessage(connectionId, {
         type: 'JOIN_REJECTED',
-        reason: 'Room sudah ditutup oleh host.',
+        reason: 'Room sudah selesai. Silakan gabung ke Room baru.',
       });
       return;
     }
@@ -877,6 +908,7 @@ export class HostRoomManager {
     };
 
     this.status = 'IN_GAME';
+    this.lifecycleState = 'PLAYING';
     this.syncAllClients(undefined, true);
     return { ok: true };
   }
@@ -995,6 +1027,7 @@ export class HostRoomManager {
     this.gameState = outcome.state;
     if (this.gameState.winnerId) {
       this.status = 'FINISHED';
+      this.lifecycleState = 'FINISHED';
     }
     this.syncAllClients();
     return { ok: true };
@@ -1044,19 +1077,37 @@ export class HostRoomManager {
     this.gameState = working;
     if (this.gameState.winnerId) {
       this.status = 'FINISHED';
+      this.lifecycleState = 'FINISHED';
     }
     this.syncAllClients();
     return true;
   }
 
-  closeRoom(reason = 'Room diakhiri oleh host.'): void {
-    this.status = 'CLOSED';
+  closeRoom(reason = 'Room selesai. Kembali ke lobi.'): void {
+    if (this.status === 'CLOSING' || this.status === 'CLOSED') {
+      return;
+    }
+    this.status = 'CLOSING';
+    this.lifecycleState = 'CLOSING';
+
     for (const sess of this.sessions.values()) {
       if (sess.isHost || !sess.connectionId) continue;
       this.sendMessage(sess.connectionId, { type: 'ROOM_CLOSED', reason });
       void this.transport.kickClient(sess.connectionId, reason);
     }
+
+    this.sessions.clear();
     this.connectionToPlayerId.clear();
+    this.singleGameTokens.clear();
+    this.processedActionIds.clear();
+    this.lastActionSeqByPlayer.clear();
+    this.lastSentStateByPlayer.clear();
+    this.lastSentRoomByPlayer.clear();
+    this.lastSentVersionByPlayer.clear();
+    this.gameState = null;
+
+    this.status = 'CLOSED';
+    this.lifecycleState = 'CLOSED';
     this.emitHostUpdate();
   }
 }

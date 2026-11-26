@@ -1,5 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Play, RefreshCw, Server, Trash2, UserX } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  CheckCircle2,
+  Play,
+  RefreshCw,
+  Server,
+  Trash2,
+  UserX,
+} from 'lucide-react';
 import { RealQrCodeDisplay } from '../components/RealQrCodeDisplay';
 import { CLASSIC_RULES, DEFAULT_HOUSE_RULES } from '../engine/rules';
 import {
@@ -17,11 +25,13 @@ import {
   createCapacitorServerTransport,
   getNativeMultiplayerCapabilities,
   getUnoLocalServerPlugin,
+  PluginListenerHandle,
 } from '../multiplayer/nativeBridge';
 import {
   ConnectionMethod,
   QRConnectionPayload,
   QrTokenType,
+  RoomLifecycleState,
   RoomPublicSnapshot,
   SingleGameTokenRecord,
   WifiDirectGroupInfo,
@@ -39,7 +49,8 @@ interface HostRoomScreenProps {
   onGameStarted: (
     manager: HostRoomManager,
     initialRoom: RoomPublicSnapshot,
-    initialView: ClientVisibleGameState
+    initialView: ClientVisibleGameState,
+    detachListeners: () => Promise<void>
   ) => void;
 }
 
@@ -62,6 +73,8 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
   const [rules, setRules] = useState<RoomRuleConfig>(initialRules);
   const [port, setPort] = useState(8765);
 
+  const [lifecycleState, setLifecycleState] =
+    useState<RoomLifecycleState>('IDLE');
   const [serverActive, setServerActive] = useState(false);
   const [hostIps, setHostIps] = useState<string[]>([]);
   const [roomId, setRoomId] = useState(() => generateRoomId());
@@ -77,32 +90,64 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
   const [roomSnapshot, setRoomSnapshot] = useState<RoomPublicSnapshot | null>(
     null
   );
+  const [statusNotice, setStatusNotice] = useState<string>('Siap membuat Room baru.');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const managerRef = useRef<HostRoomManager | null>(null);
+  const listenersRef = useRef<PluginListenerHandle[]>([]);
   const handedOffRef = useRef(false);
+  const isStartingRef = useRef(false);
+
+  const detachListeners = useCallback(async () => {
+    const handles = listenersRef.current;
+    listenersRef.current = [];
+    for (const handle of handles) {
+      await handle.remove().catch(() => {});
+    }
+    const plugin = getUnoLocalServerPlugin();
+    await plugin?.removeAllListeners().catch(() => {});
+  }, []);
 
   useEffect(() => {
     return () => {
-      if (!handedOffRef.current && managerRef.current) {
-        managerRef.current.closeRoom('Host membatalkan room.');
-        const plugin = getUnoLocalServerPlugin();
-        void plugin?.stopServer();
+      if (!handedOffRef.current) {
+        managerRef.current?.closeRoom('Host membatalkan pembuatan Room.');
+        managerRef.current = null;
+        void detachListeners().then(() => {
+          const plugin = getUnoLocalServerPlugin();
+          return plugin?.stopServer().catch(() => {});
+        });
       }
     };
-  }, []);
+  }, [detachListeners]);
 
   const handleStartServer = async () => {
+    if (isStartingRef.current || lifecycleState === 'CREATING') return;
     setErrorMsg(null);
+
     const plugin = getUnoLocalServerPlugin();
     if (!plugin) {
+      setLifecycleState('ERROR');
       setErrorMsg(
         'Server WebSocket lokal membutuhkan APK Android Studio dengan plugin Kotlin UnoLocalServer. Tidak dapat dijalankan di browser web.'
       );
       return;
     }
 
+    isStartingRef.current = true;
+    handedOffRef.current = false;
+    setLifecycleState('CREATING');
+    setStatusNotice('Menyiapkan Room & server WebSocket lokal...');
+
     try {
+      // Ensure any residual listeners or server socket from a prior Room are 100% cleared first
+      if (managerRef.current) {
+        managerRef.current.closeRoom('Memulai ulang sesi Room baru.');
+        managerRef.current = null;
+      }
+      await detachListeners();
+      await plugin.stopServer().catch(() => {});
+
       const nextRoomId = generateRoomId();
       const nextCode = generateRoomCode();
       const nextPersistentToken = generateAuthToken('pr');
@@ -112,6 +157,7 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
 
       const startRes = await plugin.startServer({ port });
       if (!startRes.started) {
+        setLifecycleState('ERROR');
         setErrorMsg('Gagal memulai server WebSocket lokal pada perangkat.');
         return;
       }
@@ -133,17 +179,37 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
         },
         transport,
         (snapshot, hostView) => {
+          if (managerRef.current !== manager) return;
           setRoomSnapshot(snapshot);
+          if (snapshot.lifecycleState) {
+            setLifecycleState(snapshot.lifecycleState);
+          }
           setSingleTokens(manager.getSingleGameTokens());
-          if (snapshot.status === 'IN_GAME' && hostView && !handedOffRef.current) {
+          const joinedHumans = snapshot.participants.filter(
+            (p) => !p.isBot && !p.isHost
+          ).length;
+          if (snapshot.status === 'LOBBY') {
+            setStatusNotice(
+              joinedHumans > 0
+                ? `Pemain bergabung (${snapshot.participants.length}/${maxPlayers}) · Siap dimulai.`
+                : 'Room berhasil dibuat · Menunggu pemain bergabung.'
+            );
+          }
+          if (
+            snapshot.status === 'IN_GAME' &&
+            hostView &&
+            !handedOffRef.current
+          ) {
             handedOffRef.current = true;
-            onGameStarted(manager, snapshot, hostView);
+            setLifecycleState('PLAYING');
+            onGameStarted(manager, snapshot, hostView, detachListeners);
           }
         }
       );
 
       const initialSingle = manager.issueSingleGameToken();
       managerRef.current = manager;
+
       const resolvedPrimary =
         connectionMethod === 'WIFI_DIRECT'
           ? resolveWifiDirectHostIp(wifiDirectInfo, startRes.ipAddresses)
@@ -154,27 +220,46 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
             ...startRes.ipAddresses.filter((ip) => ip !== resolvedPrimary),
           ]
         : startRes.ipAddresses;
+
+      // Register fresh Capacitor listeners and keep exact handles for teardown
+      const msgHandle = await plugin.addListener('clientMessage', (ev) => {
+        if (managerRef.current === manager) {
+          manager.handleClientMessage(ev.connectionId, ev.payload);
+        }
+      });
+      const discHandle = await plugin.addListener('clientDisconnected', (ev) => {
+        if (managerRef.current === manager) {
+          manager.handleClientDisconnect(ev.connectionId);
+        }
+      });
+      const errHandle = await plugin.addListener('serverError', (ev) => {
+        if (managerRef.current === manager) {
+          setErrorMsg(ev.message);
+        }
+      });
+      listenersRef.current = [msgHandle, discHandle, errHandle];
+
       setHostIps(mergedIps);
       setRoomSnapshot(manager.getSnapshot());
       setSingleTokens(manager.getSingleGameTokens());
       setSelectedSingleToken(initialSingle);
       setServerActive(true);
-
-      await plugin.addListener('clientMessage', (ev) => {
-        manager.handleClientMessage(ev.connectionId, ev.payload);
-      });
-      await plugin.addListener('clientDisconnected', (ev) => {
-        manager.handleClientDisconnect(ev.connectionId);
-      });
-      await plugin.addListener('serverError', (ev) => {
-        setErrorMsg(ev.message);
-      });
+      setLifecycleState('WAITING');
+      setStatusNotice('Room berhasil dibuat · Menunggu pemain.');
     } catch (err) {
+      await detachListeners();
+      await plugin.stopServer().catch(() => {});
+      managerRef.current = null;
+      setServerActive(false);
+      setLifecycleState('ERROR');
+      setStatusNotice('Gagal membuka Room. Anda dapat mencoba lagi.');
       setErrorMsg(
         err instanceof Error
           ? err.message
           : 'Gagal menjalankan server WebSocket lokal.'
       );
+    } finally {
+      isStartingRef.current = false;
     }
   };
 
@@ -186,18 +271,28 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
   };
 
   const handleStopServer = async () => {
-    managerRef.current?.closeRoom('Room dihentikan oleh host.');
+    setLifecycleState('CLOSING');
+    setStatusNotice('Menutup Room & membersihkan koneksi...');
+    managerRef.current?.closeRoom('Room telah diakhiri oleh Host. Kembali ke lobi.');
     managerRef.current = null;
+    handedOffRef.current = false;
+
+    await detachListeners();
     const plugin = getUnoLocalServerPlugin();
-    await plugin?.stopServer();
+    await plugin?.stopServer().catch(() => {});
+
     setServerActive(false);
     setRoomSnapshot(null);
     setSingleTokens([]);
     setSelectedSingleToken(null);
+    setErrorMsg(null);
+    setLifecycleState('IDLE');
+    setStatusNotice('Room ditutup · Siap membuat Room baru.');
   };
 
   const handleStartMatch = () => {
     if (!managerRef.current) return;
+    setErrorMsg(null);
     const res = managerRef.current.startGame();
     if (!res.ok && res.error) {
       setErrorMsg(res.error);
@@ -243,13 +338,12 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
   ]);
 
   return (
-    <div className="w-full h-full overflow-y-auto bg-gradient-to-br from-[#072e1e] via-[#041d13] to-[#02100a] px-4 sm:px-8 py-4 sm:py-6 flex flex-col">
+    <div className="w-full h-full overflow-y-auto bg-gradient-to-br from-[#072e1e] via-[#041d13] to-[#02100a] px-4 sm:px-8 py-4 sm:py-6 safe-pt safe-pb flex flex-col">
       <div className="flex items-center justify-between max-w-5xl w-full mx-auto mb-4">
         <button
           type="button"
           onClick={() => {
-            void handleStopServer();
-            onBack();
+            void handleStopServer().then(() => onBack());
           }}
           className="min-h-[44px] px-4 rounded-xl bg-black/40 hover:bg-black/60 border border-white/15 flex items-center gap-2 text-sm font-semibold text-white cursor-pointer"
         >
@@ -291,6 +385,16 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
             </p>
           </div>
         )}
+
+        <div className="rounded-xl bg-emerald-950/60 border border-emerald-400/30 px-4 py-2.5 text-xs sm:text-sm text-emerald-100 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+            <span className="truncate">{statusNotice}</span>
+          </div>
+          <span className="text-[11px] font-mono-num font-bold px-2 py-0.5 rounded bg-black/40 text-amber-300 shrink-0">
+            {lifecycleState}
+          </span>
+        </div>
 
         {errorMsg && (
           <div className="rounded-xl bg-red-950/80 border border-red-400/50 px-4 py-3 text-xs sm:text-sm text-red-100">
@@ -455,16 +559,24 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
 
               <button
                 type="button"
-                onClick={handleStartServer}
-                disabled={!caps.localWebSocketServerSupported}
+                onClick={() => void handleStartServer()}
+                disabled={
+                  !caps.localWebSocketServerSupported ||
+                  lifecycleState === 'CREATING'
+                }
                 className={`min-h-[48px] w-full rounded-xl font-display font-bold text-sm sm:text-base flex items-center justify-center gap-2 ${
-                  caps.localWebSocketServerSupported
+                  caps.localWebSocketServerSupported &&
+                  lifecycleState !== 'CREATING'
                     ? 'bg-amber-400 hover:bg-amber-300 border-b-4 border-amber-600 text-slate-950 cursor-pointer'
                     : 'bg-white/10 text-white/40 cursor-not-allowed'
                 }`}
               >
                 <Server className="w-4 h-4" />
-                <span>Buka Room &amp; Jalankan Server</span>
+                <span>
+                  {lifecycleState === 'CREATING'
+                    ? 'Menyiapkan Room...'
+                    : 'Buka Room & Jalankan Server'}
+                </span>
               </button>
             </div>
           </div>
@@ -505,7 +617,11 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
                   roomStatusLabel={
                     roomSnapshot?.status === 'IN_GAME'
                       ? 'Permainan berlangsung'
-                      : (roomSnapshot?.participants.length ?? 0) + (fillBots ? maxPlayers - (roomSnapshot?.participants.length ?? 0) : 0) >= 2
+                      : (roomSnapshot?.participants.length ?? 0) +
+                            (fillBots
+                              ? maxPlayers - (roomSnapshot?.participants.length ?? 0)
+                              : 0) >=
+                          2
                         ? 'Siap bermain'
                         : 'Menunggu pemain'
                   }
@@ -618,7 +734,7 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={handleStopServer}
+                  onClick={() => void handleStopServer()}
                   className="min-h-[40px] w-full rounded-xl bg-red-600/80 hover:bg-red-500 text-white text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Trash2 className="w-4 h-4" />

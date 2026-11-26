@@ -6,12 +6,14 @@ import { formatDuration } from '../utilities/cardHelpers';
 
 interface MatchResultScreenProps {
   result: MatchResult;
+  isMultiplayer?: boolean;
   onPlayAgain: () => void;
   onBackToMenu: () => void;
 }
 
 export const MatchResultScreen: React.FC<MatchResultScreenProps> = ({
   result,
+  isMultiplayer = false,
   onPlayAgain,
   onBackToMenu,
 }) => {
@@ -40,6 +42,7 @@ export const MatchResultScreen: React.FC<MatchResultScreenProps> = ({
               <p className="text-xs sm:text-sm text-emerald-100/75 tabular-nums">
                 Skor Pemenang: {result.totalPointsEarned} poin · Durasi:{' '}
                 {formatDuration(result.durationSeconds)}
+                {isMultiplayer ? ' · Room selesai & siap membuat Room baru' : ''}
               </p>
             </div>
           </div>
@@ -51,7 +54,7 @@ export const MatchResultScreen: React.FC<MatchResultScreenProps> = ({
               className="min-h-[48px] px-5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-display font-bold text-sm flex items-center gap-2 cursor-pointer whitespace-nowrap"
             >
               <RotateCw className="w-4 h-4" />
-              <span>Main Lagi</span>
+              <span>{isMultiplayer ? 'Kembali ke Lobi' : 'Main Lagi'}</span>
             </button>
             <button
               type="button"

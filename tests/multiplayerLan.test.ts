@@ -967,4 +967,480 @@ test('Sinkronisasi STATE_DELTA, pemulihan RESYNC_REQUEST saat gap versi, dan pen
   await wsServer.closeAll();
 });
 
+function installMockBrowserWindow() {
+  const storageMap = new Map<string, string>();
+  const globalAny = globalThis as unknown as {
+    window: Record<string, unknown>;
+  };
+  globalAny.window = {
+    setInterval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    sessionStorage: {
+      getItem: (k: string) => storageMap.get(k) ?? null,
+      setItem: (k: string, v: string) => storageMap.set(k, v),
+      removeItem: (k: string) => storageMap.delete(k),
+      clear: () => storageMap.clear(),
+    },
+  };
+  return storageMap;
+}
+
+test('Skenario 1 & 7: Siklus hidup multi-room berulang (Room 1 -> selesai/tutup -> Room 2 -> pemain sama gabung ulang -> Room 3)', async () => {
+  const storageMap = installMockBrowserWindow();
+
+  const senders = new Map<string, (txt: string) => void>();
+  const closers = new Map<string, () => void>();
+  let activeManager: HostRoomManager | null = null;
+
+  // Simulate Android server plugin socket surviving cleanly across sequential HostRoomManager sessions
+  const wsServer = await createLoopbackWsServer(
+    (id, send, close) => {
+      senders.set(id, send);
+      closers.set(id, close);
+    },
+    (id, text) => activeManager?.handleClientMessage(id, text),
+    (id) => activeManager?.handleClientDisconnect(id)
+  );
+
+  const sharedTransport: HostServerTransport = {
+    sendToClient(connectionId, payload) {
+      senders.get(connectionId)?.(payload);
+      return true;
+    },
+    kickClient(connectionId) {
+      closers.get(connectionId)?.();
+    },
+  };
+
+  for (const round of [1, 2, 3]) {
+    const code = `RM00${round}A`;
+    const token = `pr_tok_${round}`;
+    const roomId = `rm_seq_${round}`;
+
+    const manager = new HostRoomManager(
+      {
+        roomId,
+        roomCode: code,
+        roomAuthToken: token,
+        maxPlayers: 2,
+        hostMode: 'PLAYER',
+        hostName: 'HostHP',
+        fillEmptyWithBots: false,
+        botDifficulty: 'normal',
+        connectionMethod: 'WIFI_LAN',
+        port: wsServer.port,
+        rules: CLASSIC_RULES,
+      },
+      sharedTransport
+    );
+    activeManager = manager;
+    assert.equal(manager.getLifecycleState(), 'WAITING');
+
+    await new Promise<void>((resolve, reject) => {
+      let client: LanWebSocketClient;
+      let sawClosed = false;
+
+      client = new LanWebSocketClient({
+        hostIp: '127.0.0.1',
+        port: wsServer.port,
+        roomId,
+        roomCode: code,
+        roomAuthToken: token,
+        playerName: 'PemainTetap',
+        onStateChange: (s) => {
+          if (s.status === 'ERROR') {
+            client.destroy();
+            reject(new Error(`Round ${round} error: ${s.errorMessage}`));
+            return;
+          }
+          if (s.status === 'AUTHENTICATED' && !s.gameState) {
+            // Reconnect token saved for this room only
+            assert.ok(s.reconnectToken);
+            const started = manager.startGame();
+            assert.equal(started.ok, true);
+            assert.equal(manager.getLifecycleState(), 'PLAYING');
+            return;
+          }
+          if (s.status === 'AUTHENTICATED' && s.gameState?.stateVersion === 1 && !sawClosed) {
+            // Host closes Room #round cleanly after game ran (simulates end of match / exit)
+            sawClosed = true;
+            manager.closeRoom(`Room ${round} selesai.`);
+            assert.equal(manager.getLifecycleState(), 'CLOSED');
+            assert.equal(manager.getSnapshot().participants.length, 0);
+            // Calling closeRoom a second time must be idempotent
+            manager.closeRoom('Duplicate close');
+            return;
+          }
+          if (sawClosed && s.status === 'DISCONNECTED' && s.roomClosedByHost) {
+            // Stale reconnect token for finished room must be cleared from storage
+            assert.equal(storageMap.size, 0);
+            client.destroy();
+            resolve();
+          }
+        },
+      });
+
+      client.connect();
+    });
+
+    // Late join to closed Room #round must be cleanly rejected
+    const lateSent: HostToClientMessage[] = [];
+    const lateManagerTransport: HostServerTransport = {
+      sendToClient(_c, p) {
+        lateSent.push(JSON.parse(p) as HostToClientMessage);
+        return true;
+      },
+      kickClient() {},
+    };
+    assert.equal(manager.getLifecycleState(), 'CLOSED');
+    manager.handleClientMessage(
+      'conn_late',
+      JSON.stringify({
+        type: 'JOIN_REQUEST',
+        roomId,
+        roomCode: code,
+        roomAuthToken: token,
+        playerName: 'Terlambat',
+      })
+    );
+    assert.equal(lateSent.length, 0); // late message goes to sharedTransport
+  }
+
+  // Also explicitly verify late JOIN_REQUEST on a closed manager emits JOIN_REJECTED
+  const closedTrans = new InMemoryTransport();
+  const closedMgr = new HostRoomManager(
+    {
+      roomId: 'rm_closed_check',
+      roomCode: 'CLS001',
+      roomAuthToken: 'tok_cls',
+      maxPlayers: 2,
+      hostMode: 'PLAYER',
+      hostName: 'Host',
+      fillEmptyWithBots: false,
+      botDifficulty: 'normal',
+      connectionMethod: 'WIFI_LAN',
+      port: 8765,
+      rules: CLASSIC_RULES,
+    },
+    closedTrans
+  );
+  closedMgr.closeRoom('Selesai');
+  closedMgr.handleClientMessage(
+    'conn_late_2',
+    JSON.stringify({
+      type: 'JOIN_REQUEST',
+      roomId: 'rm_closed_check',
+      roomCode: 'CLS001',
+      roomAuthToken: 'tok_cls',
+      playerName: 'Terlambat',
+    })
+  );
+  assert.equal(closedTrans.lastMessage('conn_late_2')?.type, 'JOIN_REJECTED');
+
+  await wsServer.closeAll();
+});
+
+test('Skenario 4 & 5: Satu pemain keluar tidak menghentikan server; pemain keluar bisa langsung gabung Room lain', async () => {
+  const storageMap = installMockBrowserWindow();
+
+  const senders1 = new Map<string, (txt: string) => void>();
+  const closers1 = new Map<string, () => void>();
+  let manager1: HostRoomManager;
+
+  const ws1 = await createLoopbackWsServer(
+    (id, send, close) => {
+      senders1.set(id, send);
+      closers1.set(id, close);
+    },
+    (id, text) => manager1.handleClientMessage(id, text),
+    (id) => manager1.handleClientDisconnect(id)
+  );
+
+  manager1 = new HostRoomManager(
+    {
+      roomId: 'rm_leave_1',
+      roomCode: 'LVE111',
+      roomAuthToken: 'tok_lve1',
+      maxPlayers: 3,
+      hostMode: 'PLAYER',
+      hostName: 'Host1',
+      fillEmptyWithBots: false,
+      botDifficulty: 'normal',
+      connectionMethod: 'WIFI_LAN',
+      port: ws1.port,
+      rules: CLASSIC_RULES,
+    },
+    {
+      sendToClient(c, p) {
+        senders1.get(c)?.(p);
+        return true;
+      },
+      kickClient(c) {
+        closers1.get(c)?.();
+      },
+    }
+  );
+
+  const senders2 = new Map<string, (txt: string) => void>();
+  const closers2 = new Map<string, () => void>();
+  let manager2: HostRoomManager;
+  const ws2 = await createLoopbackWsServer(
+    (id, send, close) => {
+      senders2.set(id, send);
+      closers2.set(id, close);
+    },
+    (id, text) => manager2.handleClientMessage(id, text),
+    (id) => manager2.handleClientDisconnect(id)
+  );
+  manager2 = new HostRoomManager(
+    {
+      roomId: 'rm_leave_2',
+      roomCode: 'LVE222',
+      roomAuthToken: 'tok_lve2',
+      maxPlayers: 2,
+      hostMode: 'PLAYER',
+      hostName: 'Host2',
+      fillEmptyWithBots: false,
+      botDifficulty: 'normal',
+      connectionMethod: 'WIFI_LAN',
+      port: ws2.port,
+      rules: CLASSIC_RULES,
+    },
+    {
+      sendToClient(c, p) {
+        senders2.get(c)?.(p);
+        return true;
+      },
+      kickClient(c) {
+        closers2.get(c)?.();
+      },
+    }
+  );
+
+  // Connect ClientA and ClientB to Room 1
+  await new Promise<void>((resolve, reject) => {
+    let joinedCount = 0;
+    let clientA: LanWebSocketClient;
+    let clientB: LanWebSocketClient;
+
+    const maybeStart = () => {
+      if (joinedCount === 2) {
+        const res = manager1.startGame();
+        assert.equal(res.ok, true);
+      }
+    };
+
+    clientA = new LanWebSocketClient({
+      hostIp: '127.0.0.1',
+      port: ws1.port,
+      roomId: 'rm_leave_1',
+      roomCode: 'LVE111',
+      roomAuthToken: 'tok_lve1',
+      playerName: 'ClientA',
+      onStateChange: (s) => {
+        if (s.status === 'ERROR') {
+          reject(new Error(s.errorMessage ?? 'ClientA error'));
+          return;
+        }
+        if (s.status === 'AUTHENTICATED' && !s.gameState) {
+          joinedCount += 1;
+          maybeStart();
+          return;
+        }
+        if (s.status === 'AUTHENTICATED' && s.gameState?.stateVersion === 1) {
+          // ClientA voluntarily exits Room 1 mid-game
+          clientA.leaveRoom();
+          assert.equal(storageMap.size, 0);
+
+          // Immediately join Room 2 as a fresh client
+          const clientAInRoom2 = new LanWebSocketClient({
+            hostIp: '127.0.0.1',
+            port: ws2.port,
+            roomId: 'rm_leave_2',
+            roomCode: 'LVE222',
+            roomAuthToken: 'tok_lve2',
+            playerName: 'ClientA',
+            onStateChange: (s2) => {
+              if (s2.status === 'ERROR') {
+                reject(new Error(s2.errorMessage ?? 'Room2 error'));
+                return;
+              }
+              if (s2.status === 'AUTHENTICATED') {
+                // Verify Room 1 stays PLAYING/open for Host1 + ClientB while ClientA is cleanly in Room 2
+                assert.equal(manager1.getLifecycleState(), 'PLAYING');
+                assert.equal(s2.room?.roomCode, 'LVE222');
+                assert.equal(
+                  manager2.getSnapshot().participants.some((p) => p.displayName === 'ClientA'),
+                  true
+                );
+                clientAInRoom2.destroy();
+                clientB.destroy();
+                resolve();
+              }
+            },
+          });
+          clientAInRoom2.connect();
+        }
+      },
+    });
+
+    clientB = new LanWebSocketClient({
+      hostIp: '127.0.0.1',
+      port: ws1.port,
+      roomId: 'rm_leave_1',
+      roomCode: 'LVE111',
+      roomAuthToken: 'tok_lve1',
+      playerName: 'ClientB',
+      onStateChange: (s) => {
+        if (s.status === 'AUTHENTICATED' && !s.gameState) {
+          joinedCount += 1;
+          maybeStart();
+        }
+      },
+    });
+
+    clientA.connect();
+    clientB.connect();
+  });
+
+  await Promise.all([ws1.closeAll(), ws2.closeAll()]);
+});
+
+test('Skenario 6: Gangguan Wi-Fi sementara memicu reconnect bertahap & pulih otomatis saat Host masih aktif', async () => {
+  installMockBrowserWindow();
+
+  const senders = new Map<string, (txt: string) => void>();
+  const closers = new Map<string, () => void>();
+  let manager: HostRoomManager;
+
+  const wsServer = await createLoopbackWsServer(
+    (id, send, close) => {
+      senders.set(id, send);
+      closers.set(id, close);
+    },
+    (id, text) => manager.handleClientMessage(id, text),
+    (id) => manager.handleClientDisconnect(id)
+  );
+
+  manager = new HostRoomManager(
+    {
+      roomId: 'rm_wifi_drop',
+      roomCode: 'WIFI99',
+      roomAuthToken: 'tok_wifi',
+      maxPlayers: 2,
+      hostMode: 'PLAYER',
+      hostName: 'HostWifi',
+      fillEmptyWithBots: false,
+      botDifficulty: 'normal',
+      connectionMethod: 'WIFI_LAN',
+      port: wsServer.port,
+      rules: CLASSIC_RULES,
+    },
+    {
+      sendToClient(c, p) {
+        senders.get(c)?.(p);
+        return true;
+      },
+      kickClient(c) {
+        closers.get(c)?.();
+      },
+    }
+  );
+
+  await new Promise<void>((resolve, reject) => {
+    let client: LanWebSocketClient;
+    let simulatedDrop = false;
+    let sawReconnecting = false;
+    let firstPlayerId: string | null = null;
+
+    client = new LanWebSocketClient({
+      hostIp: '127.0.0.1',
+      port: wsServer.port,
+      roomId: 'rm_wifi_drop',
+      roomCode: 'WIFI99',
+      roomAuthToken: 'tok_wifi',
+      playerName: 'ClientWifi',
+      onStateChange: (s) => {
+        if (s.status === 'ERROR') {
+          client.destroy();
+          reject(new Error(s.errorMessage ?? 'Unexpected Wi-Fi client error'));
+          return;
+        }
+        if (s.status === 'AUTHENTICATED' && !s.gameState && !simulatedDrop) {
+          firstPlayerId = s.playerId;
+          manager.startGame();
+          return;
+        }
+        if (s.status === 'AUTHENTICATED' && s.gameState && !simulatedDrop) {
+          simulatedDrop = true;
+          // Abruptly sever the underlying TCP socket (simulating Wi-Fi blip)
+          const activeConnId = Array.from(closers.keys())[0];
+          closers.get(activeConnId)?.();
+          return;
+        }
+        if (simulatedDrop && s.status === 'RECONNECTING') {
+          sawReconnecting = true;
+          return;
+        }
+        if (simulatedDrop && sawReconnecting && s.status === 'AUTHENTICATED' && s.gameState) {
+          // Same seat & hand restored without duplicate connections
+          assert.equal(s.playerId, firstPlayerId);
+          assert.equal(s.gameState.selfHand.length, 7);
+          assert.equal(s.reconnectAttempt, 0);
+          client.destroy();
+          resolve();
+        }
+      },
+    });
+
+    client.connect();
+  });
+
+  await wsServer.closeAll();
+});
+
+test('Skenario 8: Resume dari background (resetAfterAppResume) mencegah timeout palsu dan langsung resync klien', () => {
+  const transport = new InMemoryTransport();
+  const manager = new HostRoomManager(
+    {
+      roomId: 'rm_bg_1',
+      roomCode: 'BG2026',
+      roomAuthToken: 'tok_bg',
+      maxPlayers: 2,
+      hostMode: 'PLAYER',
+      hostName: 'HostBG',
+      fillEmptyWithBots: false,
+      botDifficulty: 'normal',
+      connectionMethod: 'WIFI_LAN',
+      port: 8765,
+      rules: CLASSIC_RULES,
+    },
+    transport
+  );
+
+  manager.handleClientMessage(
+    'conn_bg',
+    JSON.stringify({
+      type: 'JOIN_REQUEST',
+      roomId: 'rm_bg_1',
+      roomCode: 'BG2026',
+      roomAuthToken: 'tok_bg',
+      playerName: 'PemainBG',
+    })
+  );
+  manager.startGame();
+
+  const futureNow = Date.now() + 25_000; // 25s later (exceeds HEARTBEAT_TIMEOUT_MS = 9000ms)
+  manager.resetAfterAppResume(futureNow);
+
+  // Immediately checking heartbeats after foreground resume must NOT falsely kick connected clients
+  assert.equal(manager.checkHeartbeats(futureNow + 1000), false);
+  assert.equal(transport.kickedConnections.length, 0);
+  // Client received fresh STATE_SYNC on resume
+  assert.equal(transport.lastMessage('conn_bg')?.type, 'STATE_SYNC');
+});
+
+
 

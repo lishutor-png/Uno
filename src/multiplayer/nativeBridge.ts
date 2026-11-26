@@ -48,6 +48,12 @@ export interface UnoLocalServerPluginInterface {
     eventName: 'serverError',
     cb: (data: { message: string }) => void
   ): Promise<PluginListenerHandle>;
+  removeAllListeners(): Promise<void>;
+  getServerStatus?(): Promise<{
+    state: string;
+    activePort: number;
+    connectedClients: number;
+  }>;
 }
 
 export interface UnoWifiDirectPluginInterface {

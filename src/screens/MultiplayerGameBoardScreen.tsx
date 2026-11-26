@@ -25,10 +25,6 @@ import {
   LanClientState,
   LanWebSocketClient,
 } from '../multiplayer/lanClient';
-import {
-  getUnoLocalServerPlugin,
-  getUnoWifiDirectPlugin,
-} from '../multiplayer/nativeBridge';
 import { GameActionPayload } from '../multiplayer/types';
 import { HandLayoutMode } from '../storage/types';
 import { useFullscreen } from '../utilities/fullscreenManager';
@@ -111,6 +107,14 @@ export const MultiplayerGameBoardScreen: React.FC<
       }
     };
 
+    hostManager.setOnHostStateChange((_room, nextView) => {
+      const nextVersion = hostManager.getStateVersion();
+      if (nextView && nextVersion >= lastHostVersionRef.current) {
+        lastHostVersionRef.current = nextVersion;
+        setView(nextView);
+      }
+    });
+
     const hbInterval = window.setInterval(() => {
       const changed = hostManager.checkHeartbeats();
       if (changed) {
@@ -124,9 +128,19 @@ export const MultiplayerGameBoardScreen: React.FC<
       }
     }, 780);
 
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        hostManager.resetAfterAppResume();
+        refreshHost();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
     return () => {
+      hostManager.setOnHostStateChange(undefined);
       window.clearInterval(hbInterval);
       window.clearInterval(botInterval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [role, hostManager]);
 
@@ -244,6 +258,10 @@ export const MultiplayerGameBoardScreen: React.FC<
   const isSpectator =
     role === 'HOST' && hostManager?.config.hostMode === 'SPECTATOR';
 
+  const isMatchFinished = Boolean(
+    view.winnerId || view.matchResult || finishedRef.current
+  );
+
   const isClientDisconnected =
     role === 'CLIENT' &&
     Boolean(
@@ -252,6 +270,8 @@ export const MultiplayerGameBoardScreen: React.FC<
           clientStatus.status === 'DISCONNECTED' ||
           clientStatus.status === 'ERROR')
     );
+
+  const showDisconnectOverlay = !isMatchFinished && isClientDisconnected;
 
   const isPausedByDisconnect = Boolean(view.pausedByDisconnect);
 
@@ -310,13 +330,6 @@ export const MultiplayerGameBoardScreen: React.FC<
   );
 
   const handleExit = () => {
-    if (role === 'HOST') {
-      hostManager?.closeRoom('Host menutup pertandingan.');
-      void getUnoLocalServerPlugin()?.stopServer();
-      void getUnoWifiDirectPlugin()?.removeGroup();
-    } else {
-      lanClient?.leaveRoom();
-    }
     onExitToMenu();
   };
 
@@ -646,8 +659,8 @@ export const MultiplayerGameBoardScreen: React.FC<
         />
       )}
 
-      {/* Client Disconnect / Reconnecting / Host-Closed Recovery Overlay */}
-      {isClientDisconnected && clientStatus && (
+      {/* Client Disconnect / Reconnecting / Room-Closed Recovery Overlay */}
+      {showDisconnectOverlay && clientStatus && (
         <div
           className="fixed inset-0 z-50 bg-black/82 backdrop-blur-sm flex items-center justify-center p-4"
           role="dialog"
@@ -664,14 +677,18 @@ export const MultiplayerGameBoardScreen: React.FC<
                   id="disconnect-modal-title"
                   className="font-display font-black text-lg sm:text-xl text-red-300 tracking-wide"
                 >
-                  KONEKSI TERPUTUS
+                  {clientStatus.roomClosedByHost
+                    ? 'ROOM SELESAI'
+                    : 'KONEKSI TERPUTUS'}
                 </h2>
                 <p className="text-xs sm:text-sm text-emerald-100/90">
                   {clientStatus.status === 'RECONNECTING'
-                    ? 'Sedang mencoba menyambungkan kembali...'
-                    : clientStatus.isHostDead
-                      ? 'Permainan tidak dapat dilanjutkan karena Host terputus.'
-                      : 'Sambungan Wi-Fi ke perangkat Host terputus.'}
+                    ? 'Mencoba menghubungkan kembali...'
+                    : clientStatus.roomClosedByHost
+                      ? 'Room telah berakhir. Silakan kembali ke lobi untuk bergabung ke Room baru.'
+                      : clientStatus.isHostDead
+                        ? 'Host belum merespons. Periksa Wi-Fi lalu coba sambungkan kembali atau kembali ke lobi.'
+                        : 'Koneksi terputus dari perangkat Host.'}
                 </p>
               </div>
             </div>
@@ -683,23 +700,22 @@ export const MultiplayerGameBoardScreen: React.FC<
             )}
 
             <div className="space-y-2.5 pt-1">
-              {!clientStatus.errorMessage?.includes('mengakhiri') &&
-                !clientStatus.errorMessage?.includes('menutup pertandingan') && (
-                  <button
-                    type="button"
-                    onClick={() => lanClient?.reconnectNow()}
-                    className="min-h-[48px] w-full rounded-xl bg-amber-400 hover:bg-amber-300 border-b-4 border-amber-600 active:translate-y-0.5 text-slate-950 font-display font-extrabold text-sm flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <RefreshCw
-                      className={`w-4 h-4 ${
-                        clientStatus.status === 'RECONNECTING'
-                          ? 'animate-spin'
-                          : ''
-                      }`}
-                    />
-                    <span>COBA SAMBUNGKAN KEMBALI</span>
-                  </button>
-                )}
+              {!clientStatus.roomClosedByHost && (
+                <button
+                  type="button"
+                  onClick={() => lanClient?.reconnectNow()}
+                  className="min-h-[48px] w-full rounded-xl bg-amber-400 hover:bg-amber-300 border-b-4 border-amber-600 active:translate-y-0.5 text-slate-950 font-display font-extrabold text-sm flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 ${
+                      clientStatus.status === 'RECONNECTING'
+                        ? 'animate-spin'
+                        : ''
+                    }`}
+                  />
+                  <span>COBA SAMBUNGKAN KEMBALI</span>
+                </button>
+              )}
 
               <button
                 type="button"

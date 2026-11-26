@@ -28,6 +28,7 @@ export interface LanClientState {
   reconnectAttempt: number;
   maxReconnectAttempts: number;
   isHostDead: boolean;
+  roomClosedByHost: boolean;
 }
 
 export interface LanClientOptions {
@@ -43,13 +44,70 @@ export interface LanClientOptions {
   onKickedOrClosed?: (reason: string) => void;
 }
 
+interface StoredReconnectMeta {
+  roomId?: string;
+  roomCode: string;
+  roomAuthToken: string;
+  reconnectToken: string;
+  savedAt: number;
+}
+
 const HEARTBEAT_INTERVAL_MS = 3500;
 const HEARTBEAT_STALE_MS = 10000;
 const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 8000, 8000];
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
+const RECONNECT_META_TTL_MS = 10 * 60 * 1000;
 
 function getReconnectStorageKey(roomIdOrCode: string): string {
   return `mabar_uno_reconnect_${roomIdOrCode.toUpperCase()}`;
+}
+
+function loadStoredReconnectToken(opts: LanClientOptions): string | null {
+  try {
+    const key = getReconnectStorageKey(opts.roomId || opts.roomCode);
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredReconnectMeta;
+    if (!parsed || typeof parsed.reconnectToken !== 'string') return null;
+    if (Date.now() - parsed.savedAt > RECONNECT_META_TTL_MS) {
+      window.sessionStorage.removeItem(key);
+      return null;
+    }
+    if (
+      parsed.roomCode.toUpperCase() !== opts.roomCode.trim().toUpperCase() ||
+      parsed.roomAuthToken !== opts.roomAuthToken.trim()
+    ) {
+      return null;
+    }
+    if (opts.roomId && parsed.roomId && parsed.roomId !== opts.roomId) {
+      return null;
+    }
+    return parsed.reconnectToken;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredReconnectToken(
+  roomIdOrCode: string,
+  meta: StoredReconnectMeta
+): void {
+  try {
+    window.sessionStorage.setItem(
+      getReconnectStorageKey(roomIdOrCode),
+      JSON.stringify(meta)
+    );
+  } catch {
+    // Ignore storage errors in non-browser contexts
+  }
+}
+
+function removeStoredReconnectToken(roomIdOrCode: string): void {
+  try {
+    window.sessionStorage.removeItem(getReconnectStorageKey(roomIdOrCode));
+  } catch {
+    // Ignore
+  }
 }
 
 function applyDeltaToState(
@@ -100,7 +158,12 @@ function applyDeltaToState(
   }
 
   let nextRoom = prevRoom;
-  if (prevRoom && (delta.roomStatus !== undefined || delta.participantUpdates !== undefined || delta.disconnectedPlayerIds !== undefined)) {
+  if (
+    prevRoom &&
+    (delta.roomStatus !== undefined ||
+      delta.participantUpdates !== undefined ||
+      delta.disconnectedPlayerIds !== undefined)
+  ) {
     nextRoom = {
       ...prevRoom,
       status: delta.roomStatus ?? prevRoom.status,
@@ -123,6 +186,8 @@ export class LanWebSocketClient {
   private manuallyClosed = false;
   private actionSeq = 0;
   private lastAppliedStateVersion = 0;
+  private socketEpoch = 0;
+  private visibilityListener: (() => void) | null = null;
 
   private state: LanClientState = {
     status: 'IDLE',
@@ -136,19 +201,12 @@ export class LanWebSocketClient {
     reconnectAttempt: 0,
     maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
     isHostDead: false,
+    roomClosedByHost: false,
   };
 
   constructor(opts: LanClientOptions) {
     this.opts = opts;
-    try {
-      const storageKey = getReconnectStorageKey(opts.roomId || opts.roomCode);
-      const saved = window.sessionStorage.getItem(storageKey);
-      if (saved) {
-        this.state.reconnectToken = saved;
-      }
-    } catch {
-      // Ignore storage errors in non-browser contexts
-    }
+    this.state.reconnectToken = loadStoredReconnectToken(opts);
   }
 
   private setState(partial: Partial<LanClientState>): void {
@@ -156,10 +214,88 @@ export class LanWebSocketClient {
     this.opts.onStateChange(this.state);
   }
 
+  private clearAllStoredTokens(): void {
+    if (this.state.room?.roomId) {
+      removeStoredReconnectToken(this.state.room.roomId);
+    }
+    if (this.opts.roomId) {
+      removeStoredReconnectToken(this.opts.roomId);
+    }
+    if (this.opts.roomCode) {
+      removeStoredReconnectToken(this.opts.roomCode);
+    }
+  }
+
+  private detachSocket(socket: WebSocket | null): void {
+    if (!socket) return;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    try {
+      if (
+        socket.readyState === WebSocket.CONNECTING ||
+        socket.readyState === WebSocket.OPEN
+      ) {
+        socket.close();
+      }
+    } catch {
+      // Ignore close error
+    }
+  }
+
+  private attachVisibilityHandler(): void {
+    if (
+      this.visibilityListener ||
+      typeof document === 'undefined' ||
+      typeof document.addEventListener !== 'function'
+    ) {
+      return;
+    }
+    this.visibilityListener = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (this.manuallyClosed || this.state.roomClosedByHost) return;
+
+      if (this.ws && this.ws.readyState === WebSocket.OPEN && this.state.sessionId) {
+        this.lastPongAt = Date.now();
+        this.sendRaw({
+          type: 'PING',
+          sessionId: this.state.sessionId,
+          clientTime: Date.now(),
+        });
+        if (this.state.gameState && !this.state.gameState.winnerId) {
+          this.sendRaw({
+            type: 'RESYNC_REQUEST',
+            sessionId: this.state.sessionId,
+          });
+        }
+      } else if (
+        this.state.sessionId &&
+        this.state.reconnectToken &&
+        this.state.status === 'DISCONNECTED'
+      ) {
+        this.reconnectNow();
+      }
+    };
+    document.addEventListener('visibilitychange', this.visibilityListener);
+  }
+
+  private detachVisibilityHandler(): void {
+    if (
+      this.visibilityListener &&
+      typeof document !== 'undefined' &&
+      typeof document.removeEventListener === 'function'
+    ) {
+      document.removeEventListener('visibilitychange', this.visibilityListener);
+    }
+    this.visibilityListener = null;
+  }
+
   connect(): void {
     this.manuallyClosed = false;
     this.reconnectAttempts = 0;
     this.clearTimers();
+    this.attachVisibilityHandler();
     this.openSocket(false);
   }
 
@@ -167,29 +303,31 @@ export class LanWebSocketClient {
    * Manual retry entry point ("COBA SAMBUNGKAN KEMBALI") when connection dropped.
    */
   reconnectNow(): void {
+    if (this.state.roomClosedByHost) return;
     if (!this.state.reconnectToken && !this.opts.roomAuthToken) {
       return;
     }
     this.manuallyClosed = false;
     this.reconnectAttempts = 0;
     this.clearTimers();
-    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
-      try {
-        this.ws.close();
-      } catch {
-        // Ignore close errors
-      }
-    }
+    this.attachVisibilityHandler();
     this.openSocket(true);
   }
 
   private openSocket(isReconnect: boolean): void {
+    // Strictly detach and close any lingering previous socket to prevent duplicate connections
+    this.detachSocket(this.ws);
+    this.ws = null;
+    this.socketEpoch += 1;
+    const epoch = this.socketEpoch;
+
     this.setState({
       status: isReconnect ? 'RECONNECTING' : 'CONNECTING',
       errorMessage: isReconnect
-        ? 'Sedang mencoba menyambungkan kembali...'
-        : null,
+        ? 'Mencoba menghubungkan kembali...'
+        : 'Menghubungkan ke Host...',
       isHostDead: false,
+      roomClosedByHost: false,
     });
 
     const url = `ws://${this.opts.hostIp.trim()}:${this.opts.port}`;
@@ -200,7 +338,7 @@ export class LanWebSocketClient {
       this.setState({
         status: isReconnect ? 'DISCONNECTED' : 'ERROR',
         errorMessage: `Gagal membuka koneksi WebSocket ke ${url}: ${
-          err instanceof Error ? err.message : 'URL tidak valid'
+          err instanceof Error ? err.message : 'Alamat IP/Port tidak valid'
         }`,
       });
       return;
@@ -209,6 +347,7 @@ export class LanWebSocketClient {
     this.ws = socket;
 
     socket.onopen = () => {
+      if (this.socketEpoch !== epoch || this.ws !== socket) return;
       this.reconnectAttempts = 0;
       this.lastPongAt = Date.now();
       this.sendRaw({
@@ -223,6 +362,7 @@ export class LanWebSocketClient {
     };
 
     socket.onmessage = (event) => {
+      if (this.socketEpoch !== epoch || this.ws !== socket) return;
       try {
         const msg = JSON.parse(String(event.data)) as HostToClientMessage;
         this.handleHostMessage(msg);
@@ -232,19 +372,20 @@ export class LanWebSocketClient {
     };
 
     socket.onerror = () => {
+      if (this.socketEpoch !== epoch || this.ws !== socket) return;
       if (this.state.status === 'CONNECTING' && !isReconnect) {
         this.setState({
           status: 'ERROR',
-          errorMessage: `Tidak dapat menjangkau server host di ${url}. Pastikan kedua HP berada di Hotspot/Wi-Fi LAN yang sama.`,
+          errorMessage: `Tidak dapat menjangkau server Host di ${url}. Pastikan kedua HP berada di Hotspot/Wi-Fi yang sama dan Room sudah dibuka.`,
         });
       }
     };
 
     socket.onclose = () => {
+      if (this.socketEpoch !== epoch || this.ws !== socket) return;
       this.clearHeartbeat();
-      if (this.ws === socket) {
-        this.ws = null;
-      }
+      this.ws = null;
+
       if (this.manuallyClosed) {
         if (this.state.status !== 'DISCONNECTED') {
           this.setState({ status: 'DISCONNECTED' });
@@ -263,12 +404,12 @@ export class LanWebSocketClient {
           status: 'DISCONNECTED',
           isHostDead: true,
           errorMessage:
-            'Host tidak dapat dijangkau setelah beberapa kali percobaan. Kemungkinan Wi-Fi terputus atau Host menutup aplikasi.',
+            'Koneksi terputus. Host belum merespons setelah beberapa percobaan. Periksa Wi-Fi lalu coba sambungkan kembali atau kembali ke lobi.',
         });
       } else if (this.state.status !== 'ERROR') {
         this.setState({
           status: 'DISCONNECTED',
-          errorMessage: 'Koneksi ke host terputus.',
+          errorMessage: 'Koneksi terputus dari server Host.',
         });
       }
     };
@@ -282,14 +423,13 @@ export class LanWebSocketClient {
         if (msg.gameState?.stateVersion !== undefined) {
           this.lastAppliedStateVersion = msg.gameState.stateVersion;
         }
-        try {
-          const storageKey = getReconnectStorageKey(
-            msg.room.roomId || msg.room.roomCode
-          );
-          window.sessionStorage.setItem(storageKey, msg.reconnectToken);
-        } catch {
-          // Ignore storage error
-        }
+        saveStoredReconnectToken(msg.room.roomId || msg.room.roomCode, {
+          roomId: msg.room.roomId,
+          roomCode: msg.room.roomCode,
+          roomAuthToken: this.opts.roomAuthToken.trim(),
+          reconnectToken: msg.reconnectToken,
+          savedAt: Date.now(),
+        });
         this.setState({
           status: 'AUTHENTICATED',
           errorMessage: null,
@@ -300,23 +440,28 @@ export class LanWebSocketClient {
           gameState: msg.gameState,
           reconnectAttempt: 0,
           isHostDead: false,
+          roomClosedByHost: false,
         });
         this.startHeartbeat();
         break;
       }
       case 'JOIN_REJECTED': {
         this.manuallyClosed = true;
+        this.clearTimers();
+        this.clearAllStoredTokens();
+        const socket = this.ws;
+        this.ws = null;
+        this.detachSocket(socket);
         this.setState({
           status: 'ERROR',
+          reconnectToken: null,
           errorMessage: msg.reason,
         });
-        this.ws?.close();
         break;
       }
       case 'PONG': {
         this.lastPongAt = Date.now();
         const nextLatency = Math.max(1, Date.now() - msg.clientTime);
-        // Only propagate state update if latency shifted noticeably (> 8ms) to reduce idle re-renders
         if (
           this.state.latencyMs === null ||
           Math.abs(this.state.latencyMs - nextLatency) >= 8
@@ -333,6 +478,9 @@ export class LanWebSocketClient {
         if (msg.gameState.stateVersion !== undefined) {
           this.lastAppliedStateVersion = msg.gameState.stateVersion;
         }
+        if (msg.gameState.winnerId) {
+          this.clearAllStoredTokens();
+        }
         this.setState({
           room: msg.room,
           gameState: msg.gameState,
@@ -345,7 +493,6 @@ export class LanWebSocketClient {
           !currentGame ||
           msg.delta.prevVersion !== this.lastAppliedStateVersion
         ) {
-          // Sequence gap detected -> request authoritative full sync
           if (this.state.sessionId) {
             this.sendRaw({
               type: 'RESYNC_REQUEST',
@@ -360,6 +507,9 @@ export class LanWebSocketClient {
           msg.delta
         );
         this.lastAppliedStateVersion = msg.delta.stateVersion;
+        if (nextState.winnerId) {
+          this.clearAllStoredTokens();
+        }
         this.setState({
           room: nextRoom,
           gameState: nextState,
@@ -374,18 +524,16 @@ export class LanWebSocketClient {
       case 'ROOM_CLOSED': {
         this.manuallyClosed = true;
         this.clearTimers();
-        try {
-          const storageKey = getReconnectStorageKey(
-            this.state.room?.roomId || this.opts.roomId || this.opts.roomCode
-          );
-          window.sessionStorage.removeItem(storageKey);
-        } catch {
-          // Ignore
-        }
+        this.detachVisibilityHandler();
+        this.clearAllStoredTokens();
+        const isClosed = msg.type === 'ROOM_CLOSED';
         this.opts.onKickedOrClosed?.(msg.reason);
         this.setState({
           status: 'DISCONNECTED',
-          isHostDead: msg.type === 'ROOM_CLOSED',
+          reconnectToken: null,
+          sessionId: null,
+          isHostDead: isClosed,
+          roomClosedByHost: isClosed,
           errorMessage: msg.reason,
         });
         break;
@@ -416,6 +564,10 @@ export class LanWebSocketClient {
   }
 
   private scheduleReconnect(): void {
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.reconnectAttempts += 1;
     const delayMs =
       RECONNECT_BACKOFF_MS[
@@ -424,10 +576,11 @@ export class LanWebSocketClient {
     this.setState({
       status: 'RECONNECTING',
       reconnectAttempt: this.reconnectAttempts,
-      errorMessage: `Sedang mencoba menyambungkan kembali (${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`,
+      errorMessage: `Koneksi terputus · Mencoba menghubungkan kembali (${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`,
     });
     this.reconnectTimer = window.setTimeout(() => {
-      if (!this.manuallyClosed) {
+      this.reconnectTimer = null;
+      if (!this.manuallyClosed && !this.state.roomClosedByHost) {
         this.openSocket(true);
       }
     }, delayMs);
@@ -457,6 +610,7 @@ export class LanWebSocketClient {
   leaveRoom(): void {
     this.manuallyClosed = true;
     this.clearTimers();
+    this.detachVisibilityHandler();
     if (
       this.ws &&
       this.ws.readyState === WebSocket.OPEN &&
@@ -467,24 +621,31 @@ export class LanWebSocketClient {
         sessionId: this.state.sessionId,
       });
     }
-    try {
-      const storageKey = getReconnectStorageKey(
-        this.state.room?.roomId || this.opts.roomId || this.opts.roomCode
-      );
-      window.sessionStorage.removeItem(storageKey);
-    } catch {
-      // Ignore
-    }
-    this.ws?.close();
+    this.clearAllStoredTokens();
+    const socket = this.ws;
     this.ws = null;
-    this.setState({ status: 'DISCONNECTED' });
+    this.socketEpoch += 1;
+    this.detachSocket(socket);
+    this.setState({
+      status: 'DISCONNECTED',
+      sessionId: null,
+      reconnectToken: null,
+      room: null,
+      gameState: null,
+      isHostDead: false,
+      roomClosedByHost: false,
+      errorMessage: null,
+    });
   }
 
   destroy(): void {
     this.manuallyClosed = true;
     this.clearTimers();
-    this.ws?.close();
+    this.detachVisibilityHandler();
+    const socket = this.ws;
     this.ws = null;
+    this.socketEpoch += 1;
+    this.detachSocket(socket);
   }
 
   private sendRaw(msg: ClientToHostMessage): void {

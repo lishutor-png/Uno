@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 interface LocalWsServerListener {
     fun onServerStarted(port: Int)
+    fun onServerStartFailed(message: String)
     fun onClientConnected(connectionId: String, remoteAddress: String)
     fun onClientMessage(connectionId: String, payload: String)
     fun onClientDisconnected(connectionId: String, code: Int, reason: String)
@@ -19,7 +20,7 @@ interface LocalWsServerListener {
 
 /**
  * Offline WebSocket Server running locally on the Android Host device.
- * Accepts connections from other phones over Wi-Fi Hotspot or Local Router (no internet required).
+ * Supports clean shutdown and repeated restarts across multiple Rooms without app restart.
  */
 class LocalWsServer(
     port: Int,
@@ -29,16 +30,31 @@ class LocalWsServer(
     private val socketToId = ConcurrentHashMap<WebSocket, String>()
     private val idToSocket = ConcurrentHashMap<String, WebSocket>()
 
+    @Volatile
+    private var started = false
+
+    @Volatile
+    private var shuttingDown = false
+
     init {
         isReuseAddr = true
-        connectionLostTimeout = 15
+        connectionLostTimeout = 30
     }
 
     override fun onStart() {
+        started = true
         listener.onServerStarted(port)
     }
 
     override fun onOpen(conn: WebSocket, handshake: ClientHandshake?) {
+        if (shuttingDown) {
+            try {
+                conn.close(1000, "Server sedang ditutup")
+            } catch (_: Exception) {
+                // Ignore
+            }
+            return
+        }
         val connectionId = "conn_${UUID.randomUUID().toString().take(12)}"
         socketToId[conn] = connectionId
         idToSocket[connectionId] = conn
@@ -47,6 +63,7 @@ class LocalWsServer(
     }
 
     override fun onMessage(conn: WebSocket, message: String) {
+        if (shuttingDown) return
         val connectionId = socketToId[conn] ?: return
         listener.onClientMessage(connectionId, message)
     }
@@ -54,24 +71,41 @@ class LocalWsServer(
     override fun onClose(conn: WebSocket, code: Int, reason: String?, remote: Boolean) {
         val connectionId = socketToId.remove(conn) ?: return
         idToSocket.remove(connectionId)
-        listener.onClientDisconnected(connectionId, code, reason ?: "")
+        if (!shuttingDown) {
+            listener.onClientDisconnected(connectionId, code, reason ?: "")
+        }
     }
 
     override fun onError(conn: WebSocket?, ex: Exception?) {
-        listener.onServerError(ex?.message ?: "Unknown WebSocket server error")
+        val message = ex?.message ?: "Terjadi kesalahan pada server WebSocket lokal"
+        if (conn == null && !started && !shuttingDown) {
+            listener.onServerStartFailed(message)
+        } else if (!shuttingDown) {
+            listener.onServerError(message)
+        }
     }
 
     fun sendToClient(connectionId: String, payload: String): Boolean {
+        if (shuttingDown) return false
         val socket = idToSocket[connectionId] ?: return false
         if (!socket.isOpen) return false
-        socket.send(payload)
-        return true
+        return try {
+            socket.send(payload)
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun broadcastPayload(payload: String) {
+        if (shuttingDown) return
         for (socket in idToSocket.values) {
             if (socket.isOpen) {
-                socket.send(payload)
+                try {
+                    socket.send(payload)
+                } catch (_: Exception) {
+                    // Ignore transient send error on individual socket
+                }
             }
         }
     }
@@ -79,7 +113,33 @@ class LocalWsServer(
     fun kickClient(connectionId: String, reason: String) {
         val socket = idToSocket[connectionId] ?: return
         if (socket.isOpen) {
-            socket.close(4001, reason)
+            try {
+                socket.close(4001, reason)
+            } catch (_: Exception) {
+                // Ignore close error
+            }
+        }
+    }
+
+    fun getConnectedCount(): Int = idToSocket.size
+
+    fun shutdown() {
+        shuttingDown = true
+        for (socket in idToSocket.values.toList()) {
+            try {
+                if (socket.isOpen || socket.isClosing) {
+                    socket.close(1000, "Room ditutup oleh Host")
+                }
+            } catch (_: Exception) {
+                // Ignore close errors
+            }
+        }
+        socketToId.clear()
+        idToSocket.clear()
+        try {
+            stop(1500)
+        } catch (_: Exception) {
+            // Ignore shutdown errors
         }
     }
 

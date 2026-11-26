@@ -6,87 +6,163 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Capacitor Plugin bridging Android LocalWsServer to the JavaScript HostRoomManager.
+ * Enforces serialized start/stop lifecycle so Host can create and close Rooms repeatedly.
  */
 @CapacitorPlugin(name = "UnoLocalServer")
 class UnoLocalServerPlugin : Plugin() {
 
+    private val serverLock = Any()
     private var server: LocalWsServer? = null
     private var activePort: Int = 8765
+
+    @Volatile
+    private var serverState: String = "IDLE"
 
     @PluginMethod
     fun startServer(call: PluginCall) {
         val requestedPort = call.getInt("port", 8765) ?: 8765
+        val settled = AtomicBoolean(false)
 
-        if (server != null) {
-            stopInternal()
-        }
-
-        try {
-            val wsServer = LocalWsServer(requestedPort, object : LocalWsServerListener {
-                override fun onServerStarted(port: Int) {
-                    activePort = port
-                    val ips = LocalWsServer.getLocalIpv4Addresses()
-                    val ipArray = JSArray()
-                    ips.forEach { ipArray.put(it) }
-
-                    val ret = JSObject().apply {
-                        put("started", true)
-                        put("port", port)
-                        put("ipAddresses", ipArray)
-                        put("primaryIp", ips.firstOrNull() ?: "")
-                    }
-                    call.resolve(ret)
+        synchronized(serverLock) {
+            if (server != null) {
+                serverState = "CLOSING"
+                stopInternalLocked()
+                try {
+                    Thread.sleep(60)
+                } catch (_: InterruptedException) {
+                    // Ignore
                 }
+            }
 
-                override fun onClientConnected(connectionId: String, remoteAddress: String) {
-                    val data = JSObject().apply {
-                        put("connectionId", connectionId)
-                        put("remoteAddress", remoteAddress)
+            serverState = "CREATING"
+            try {
+                lateinit var wsServer: LocalWsServer
+                wsServer = LocalWsServer(requestedPort, object : LocalWsServerListener {
+                    override fun onServerStarted(port: Int) {
+                        synchronized(serverLock) {
+                            if (server === wsServer) {
+                                activePort = port
+                                serverState = "WAITING"
+                            }
+                        }
+                        if (settled.compareAndSet(false, true)) {
+                            val ips = LocalWsServer.getLocalIpv4Addresses()
+                            val ipArray = JSArray()
+                            ips.forEach { ipArray.put(it) }
+
+                            val ret = JSObject().apply {
+                                put("started", true)
+                                put("port", port)
+                                put("ipAddresses", ipArray)
+                                put("primaryIp", ips.firstOrNull() ?: "")
+                                put("state", "WAITING")
+                            }
+                            call.resolve(ret)
+                        }
                     }
-                    notifyListeners("clientConnected", data)
-                }
 
-                override fun onClientMessage(connectionId: String, payload: String) {
-                    val data = JSObject().apply {
-                        put("connectionId", connectionId)
-                        put("payload", payload)
+                    override fun onServerStartFailed(message: String) {
+                        synchronized(serverLock) {
+                            if (server === wsServer) {
+                                server = null
+                                serverState = "ERROR"
+                            }
+                        }
+                        if (settled.compareAndSet(false, true)) {
+                            call.reject("Gagal membuka server WebSocket lokal di port $requestedPort: $message")
+                        }
                     }
-                    notifyListeners("clientMessage", data)
-                }
 
-                override fun onClientDisconnected(connectionId: String, code: Int, reason: String) {
-                    val data = JSObject().apply {
-                        put("connectionId", connectionId)
-                        put("code", code)
-                        put("reason", reason)
+                    override fun onClientConnected(connectionId: String, remoteAddress: String) {
+                        synchronized(serverLock) {
+                            if (server !== wsServer) return
+                        }
+                        val data = JSObject().apply {
+                            put("connectionId", connectionId)
+                            put("remoteAddress", remoteAddress)
+                        }
+                        notifyListeners("clientConnected", data)
                     }
-                    notifyListeners("clientDisconnected", data)
-                }
 
-                override fun onServerError(message: String) {
-                    val data = JSObject().apply {
-                        put("message", message)
+                    override fun onClientMessage(connectionId: String, payload: String) {
+                        synchronized(serverLock) {
+                            if (server !== wsServer) return
+                        }
+                        val data = JSObject().apply {
+                            put("connectionId", connectionId)
+                            put("payload", payload)
+                        }
+                        notifyListeners("clientMessage", data)
                     }
-                    notifyListeners("serverError", data)
-                }
-            })
 
-            server = wsServer
-            wsServer.start()
-        } catch (e: Exception) {
-            server = null
-            call.reject("Gagal menjalankan server WebSocket lokal: ${e.message}", e)
+                    override fun onClientDisconnected(connectionId: String, code: Int, reason: String) {
+                        synchronized(serverLock) {
+                            if (server !== wsServer) return
+                        }
+                        val data = JSObject().apply {
+                            put("connectionId", connectionId)
+                            put("code", code)
+                            put("reason", reason)
+                        }
+                        notifyListeners("clientDisconnected", data)
+                    }
+
+                    override fun onServerError(message: String) {
+                        synchronized(serverLock) {
+                            if (server !== wsServer) return
+                        }
+                        val data = JSObject().apply {
+                            put("message", message)
+                        }
+                        notifyListeners("serverError", data)
+                    }
+                })
+
+                server = wsServer
+                wsServer.start()
+            } catch (e: Exception) {
+                server = null
+                serverState = "ERROR"
+                if (settled.compareAndSet(false, true)) {
+                    call.reject("Gagal menjalankan server WebSocket lokal: ${e.message}", e)
+                }
+            }
         }
     }
 
     @PluginMethod
     fun stopServer(call: PluginCall) {
-        stopInternal()
-        val ret = JSObject().apply { put("stopped", true) }
+        synchronized(serverLock) {
+            serverState = "CLOSING"
+            stopInternalLocked()
+            serverState = "IDLE"
+        }
+        val ret = JSObject().apply {
+            put("stopped", true)
+            put("state", "IDLE")
+        }
         call.resolve(ret)
+    }
+
+    @PluginMethod
+    fun getServerStatus(call: PluginCall) {
+        val currentServer: LocalWsServer?
+        val currentState: String
+        val portCopy: Int
+        synchronized(serverLock) {
+            currentServer = server
+            currentState = serverState
+            portCopy = activePort
+        }
+        call.resolve(JSObject().apply {
+            put("state", currentState)
+            put("activePort", portCopy)
+            put("connectedClients", currentServer?.getConnectedCount() ?: 0)
+        })
     }
 
     @PluginMethod
@@ -97,7 +173,8 @@ class UnoLocalServerPlugin : Plugin() {
             call.reject("connectionId dan payload wajib diisi.")
             return
         }
-        val sent = server?.sendToClient(connectionId, payload) ?: false
+        val activeServer = synchronized(serverLock) { server }
+        val sent = activeServer?.sendToClient(connectionId, payload) ?: false
         call.resolve(JSObject().apply { put("sent", sent) })
     }
 
@@ -108,7 +185,8 @@ class UnoLocalServerPlugin : Plugin() {
             call.reject("payload wajib diisi.")
             return
         }
-        server?.broadcastPayload(payload)
+        val activeServer = synchronized(serverLock) { server }
+        activeServer?.broadcastPayload(payload)
         call.resolve(JSObject().apply { put("sent", true) })
     }
 
@@ -120,7 +198,8 @@ class UnoLocalServerPlugin : Plugin() {
             call.reject("connectionId wajib diisi.")
             return
         }
-        server?.kickClient(connectionId, reason)
+        val activeServer = synchronized(serverLock) { server }
+        activeServer?.kickClient(connectionId, reason)
         call.resolve(JSObject().apply { put("kicked", true) })
     }
 
@@ -137,17 +216,22 @@ class UnoLocalServerPlugin : Plugin() {
     }
 
     override fun handleOnDestroy() {
-        stopInternal()
+        synchronized(serverLock) {
+            stopInternalLocked()
+            serverState = "IDLE"
+        }
         super.handleOnDestroy()
     }
 
-    private fun stopInternal() {
+    private fun stopInternalLocked() {
+        val existing = server
+        server = null
         try {
-            server?.stop(500)
+            existing?.shutdown()
         } catch (_: Exception) {
             // Ignore shutdown errors
         } finally {
-            server = null
+            serverState = "IDLE"
         }
     }
 }

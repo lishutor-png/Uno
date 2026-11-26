@@ -14,6 +14,16 @@ export type ConnectionMethod = 'WIFI_LAN' | 'WIFI_DIRECT';
 
 export type QrTokenType = 'PERSISTENT_ROOM' | 'SINGLE_GAME';
 
+export type RoomLifecycleState =
+  | 'IDLE'
+  | 'CREATING'
+  | 'WAITING'
+  | 'PLAYING'
+  | 'FINISHED'
+  | 'CLOSING'
+  | 'CLOSED'
+  | 'ERROR';
+
 /**
  * QR payload strictly contains connection & room auth metadata.
  * Never stores player cards or personal player information.
@@ -66,7 +76,8 @@ export interface RoomPublicSnapshot {
   fillEmptyWithBots: boolean;
   botDifficulty: BotDifficulty;
   rules: RoomRuleConfig;
-  status: 'LOBBY' | 'IN_GAME' | 'FINISHED' | 'CLOSED';
+  status: 'LOBBY' | 'IN_GAME' | 'FINISHED' | 'CLOSING' | 'CLOSED';
+  lifecycleState?: RoomLifecycleState;
   participants: RoomParticipantSummary[];
   disconnectedPlayerIds?: string[];
 }

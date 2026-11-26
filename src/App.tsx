@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { LandscapeGuard } from './components/LandscapeGuard';
 import {
   ClientVisibleGameState,
@@ -95,9 +95,11 @@ export default function App() {
     role: 'HOST' | 'CLIENT';
     hostManager?: HostRoomManager | null;
     lanClient?: LanWebSocketClient | null;
+    teardownHostListeners?: () => Promise<void>;
     initialView: ClientVisibleGameState;
     initialClientState?: LanClientState | null;
   } | null>(null);
+  const cleanupInProgressRef = useRef(false);
 
   useEffect(() => {
     soundEngine.setEnabled(preferences.soundEnabled);
@@ -171,16 +173,35 @@ export default function App() {
     [updatePreferences]
   );
 
-  const cleanupLanSession = useCallback(() => {
-    if (lanSession?.role === 'HOST') {
-      lanSession.hostManager?.closeRoom('Match selesai.');
-      void getUnoLocalServerPlugin()?.stopServer();
-      void getUnoWifiDirectPlugin()?.removeGroup();
-    } else if (lanSession?.role === 'CLIENT') {
-      lanSession.lanClient?.leaveRoom();
-    }
-    setLanSession(null);
-  }, [lanSession]);
+  const cleanupLanSession = useCallback(
+    async (closeReason = 'Room selesai. Kembali ke lobi.', removeP2pGroup = false) => {
+      if (cleanupInProgressRef.current) return;
+      const current = lanSession;
+      if (!current) return;
+
+      cleanupInProgressRef.current = true;
+      setLanSession(null);
+
+      try {
+        if (current.role === 'HOST') {
+          current.hostManager?.closeRoom(closeReason);
+          await current.teardownHostListeners?.().catch(() => {});
+          const serverPlugin = getUnoLocalServerPlugin();
+          await serverPlugin?.removeAllListeners().catch(() => {});
+          await serverPlugin?.stopServer().catch(() => {});
+          if (removeP2pGroup) {
+            await getUnoWifiDirectPlugin()?.removeGroup().catch(() => {});
+          }
+        } else if (current.role === 'CLIENT') {
+          current.lanClient?.leaveRoom();
+          current.lanClient?.destroy();
+        }
+      } finally {
+        cleanupInProgressRef.current = false;
+      }
+    },
+    [lanSession]
+  );
 
   const handleMatchFinish = useCallback(
     (result: MatchResult) => {
@@ -202,7 +223,7 @@ export default function App() {
       };
       setMatchHistory(storageService.appendMatchHistory(record));
       if (lastMatchOrigin === 'MULTIPLAYER_LAN') {
-        cleanupLanSession();
+        void cleanupLanSession('Permainan selesai. Kembali ke lobi.', false);
       }
       setScreen('MATCH_RESULT');
     },
@@ -358,11 +379,12 @@ export default function App() {
                 : 'MULTIPLAYER_LOBBY'
             );
           }}
-          onGameStarted={(manager, _room, initialView) => {
+          onGameStarted={(manager, _room, initialView, detachListeners) => {
             setLastMatchOrigin('MULTIPLAYER_LAN');
             setLanSession({
               role: 'HOST',
               hostManager: manager,
+              teardownHostListeners: detachListeners,
               initialView,
             });
             setScreen('MULTIPLAYER_GAME_BOARD');
@@ -429,8 +451,11 @@ export default function App() {
           onMatchFinish={handleMatchFinish}
           onExitToMenu={() => {
             soundEngine.playButtonTap();
-            cleanupLanSession();
-            setScreen('MAIN_MENU');
+            void cleanupLanSession(
+              'Room telah diakhiri oleh Host. Kembali ke lobi.',
+              true
+            );
+            setScreen('MULTIPLAYER_LOBBY');
           }}
         />
       )}
@@ -451,6 +476,7 @@ export default function App() {
       {screen === 'MATCH_RESULT' && lastMatchResult && (
         <MatchResultScreen
           result={lastMatchResult}
+          isMultiplayer={lastMatchOrigin === 'MULTIPLAYER_LAN'}
           onPlayAgain={handlePlayAgain}
           onBackToMenu={() => {
             soundEngine.playButtonTap();
