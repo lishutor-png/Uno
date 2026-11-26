@@ -25,10 +25,12 @@ import {
   RoomParticipantSummary,
   RoomPublicSnapshot,
   SingleGameTokenRecord,
+  StateDeltaPayload,
 } from './types';
 
 const COLORS: CardColor[] = ['red', 'yellow', 'green', 'blue'];
 const HEARTBEAT_TIMEOUT_MS = 9000;
+export const RECONNECT_GRACE_MS = 90000;
 
 function randomId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
@@ -56,10 +58,139 @@ export function generateAuthToken(prefix = ''): string {
   return prefix ? `${prefix}_${out}` : out;
 }
 
+function cardsEqual(a: readonly UnoCard[], b: readonly UnoCard[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].id !== b[i].id) return false;
+  }
+  return true;
+}
+
+function arraysEqual(a: readonly string[] = [], b: readonly string[] = []): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function buildStateDelta(
+  prev: ClientVisibleGameState,
+  next: ClientVisibleGameState,
+  prevVersion: number,
+  nextVersion: number,
+  room: RoomPublicSnapshot,
+  prevRoom: RoomPublicSnapshot | null
+): StateDeltaPayload | null {
+  const delta: StateDeltaPayload = {
+    prevVersion,
+    stateVersion: nextVersion,
+  };
+  let hasChanges = false;
+
+  if (!prevRoom || prevRoom.status !== room.status) {
+    delta.roomStatus = room.status;
+    hasChanges = true;
+  }
+
+  const prevParticipantsJson = prevRoom
+    ? JSON.stringify(prevRoom.participants)
+    : '';
+  const nextParticipantsJson = JSON.stringify(room.participants);
+  if (prevParticipantsJson !== nextParticipantsJson) {
+    delta.participantUpdates = room.participants;
+    hasChanges = true;
+  }
+
+  if (!cardsEqual(prev.selfHand, next.selfHand)) {
+    delta.selfHand = next.selfHand;
+    hasChanges = true;
+  }
+  if (prev.selfCalledUno !== next.selfCalledUno) {
+    delta.selfCalledUno = next.selfCalledUno;
+    hasChanges = true;
+  }
+  if (JSON.stringify(prev.players) !== JSON.stringify(next.players)) {
+    delta.players = next.players;
+    hasChanges = true;
+  }
+  if (prev.topDiscard.id !== next.topDiscard.id) {
+    delta.topDiscard = next.topDiscard;
+    hasChanges = true;
+  }
+  if (prev.discardCount !== next.discardCount) {
+    delta.discardCount = next.discardCount;
+    hasChanges = true;
+  }
+  if (prev.drawPileCount !== next.drawPileCount) {
+    delta.drawPileCount = next.drawPileCount;
+    hasChanges = true;
+  }
+  if (prev.activeColor !== next.activeColor) {
+    delta.activeColor = next.activeColor;
+    hasChanges = true;
+  }
+  if (prev.direction !== next.direction) {
+    delta.direction = next.direction;
+    hasChanges = true;
+  }
+  if (prev.currentTurnPlayerId !== next.currentTurnPlayerId) {
+    delta.currentTurnPlayerId = next.currentTurnPlayerId;
+    hasChanges = true;
+  }
+  if (prev.pendingDrawCount !== next.pendingDrawCount) {
+    delta.pendingDrawCount = next.pendingDrawCount;
+    hasChanges = true;
+  }
+  if (prev.pendingDrawType !== next.pendingDrawType) {
+    delta.pendingDrawType = next.pendingDrawType;
+    hasChanges = true;
+  }
+  if (prev.hasDrawnThisTurn !== next.hasDrawnThisTurn) {
+    delta.hasDrawnThisTurn = next.hasDrawnThisTurn;
+    hasChanges = true;
+  }
+  if (prev.drawnCardIdThisTurn !== next.drawnCardIdThisTurn) {
+    delta.drawnCardIdThisTurn = next.drawnCardIdThisTurn;
+    hasChanges = true;
+  }
+  if (prev.turnCount !== next.turnCount) {
+    delta.turnCount = next.turnCount;
+    hasChanges = true;
+  }
+  if (prev.winnerId !== next.winnerId) {
+    delta.winnerId = next.winnerId;
+    hasChanges = true;
+  }
+  if (prev.matchResult !== next.matchResult && next.matchResult !== null) {
+    delta.matchResult = next.matchResult;
+    hasChanges = true;
+  }
+  if (prev.lastEvent?.id !== next.lastEvent?.id) {
+    delta.lastEvent = next.lastEvent;
+    hasChanges = true;
+  }
+  if (Boolean(prev.pausedByDisconnect) !== Boolean(next.pausedByDisconnect)) {
+    delta.pausedByDisconnect = Boolean(next.pausedByDisconnect);
+    hasChanges = true;
+  }
+  if (!arraysEqual(prev.pausedPlayerNames, next.pausedPlayerNames)) {
+    delta.pausedPlayerNames = next.pausedPlayerNames ?? [];
+    hasChanges = true;
+  }
+  if (!arraysEqual(prev.disconnectedPlayerIds, next.disconnectedPlayerIds)) {
+    delta.disconnectedPlayerIds = next.disconnectedPlayerIds ?? [];
+    hasChanges = true;
+  }
+
+  return hasChanges ? delta : null;
+}
+
 /**
  * Authoritative Host Room & Game Controller.
  * Manages Room ID, Persistent Room Auth, Single-Use Game QR Tokens,
- * Host/Spectator modes, player roster (2-8), heartbeat, reconnect, and private card sync.
+ * Host/Spectator modes, player roster (2-8), heartbeat, disconnect pause & reconnect,
+ * action deduplication, and delta-optimized private card sync.
  */
 export class HostRoomManager {
   readonly config: MultiplayerRoomConfig;
@@ -70,6 +201,12 @@ export class HostRoomManager {
   private status: RoomPublicSnapshot['status'] = 'LOBBY';
   private gameState: GameState | null = null;
   private hostPlayerId: string | null = null;
+  private stateVersion = 0;
+  private processedActionIds = new Set<string>();
+  private lastActionSeqByPlayer = new Map<string, number>();
+  private lastSentStateByPlayer = new Map<string, ClientVisibleGameState>();
+  private lastSentRoomByPlayer = new Map<string, RoomPublicSnapshot>();
+  private lastSentVersionByPlayer = new Map<string, number>();
   private onHostStateChange?: (
     room: RoomPublicSnapshot,
     hostView: ClientVisibleGameState | null
@@ -99,6 +236,7 @@ export class HostRoomManager {
         isHost: true,
         isSpectator: false,
         connected: true,
+        disconnectedAt: null,
         lastHeartbeatAt: Date.now(),
       });
     } else {
@@ -128,24 +266,78 @@ export class HostRoomManager {
     );
   }
 
+  getStateVersion(): number {
+    return this.stateVersion;
+  }
+
+  private getDisconnectMeta(): {
+    pausedByDisconnect: boolean;
+    pausedPlayerNames: string[];
+    disconnectedPlayerIds: string[];
+  } {
+    if (!this.gameState) {
+      const disconnectedPlayerIds = Array.from(this.sessions.values())
+        .filter((s) => !s.isHost && !s.isSpectator && !s.connected)
+        .map((s) => s.playerId);
+      return {
+        pausedByDisconnect: false,
+        pausedPlayerNames: [],
+        disconnectedPlayerIds,
+      };
+    }
+
+    const disconnectedHumans = this.gameState.players.filter((p) => {
+      if (p.isBot) return false;
+      const sess = this.sessions.get(p.id);
+      return sess ? !sess.connected : false;
+    });
+
+    const activePlayer =
+      this.gameState.players[this.gameState.currentTurnIndex];
+    const activeSess =
+      activePlayer && !activePlayer.isBot
+        ? this.sessions.get(activePlayer.id)
+        : undefined;
+    const pausedByDisconnect =
+      this.status === 'IN_GAME' &&
+      !this.gameState.winnerId &&
+      Boolean(activePlayer && !activePlayer.isBot && activeSess && !activeSess.connected);
+
+    return {
+      pausedByDisconnect,
+      pausedPlayerNames: pausedByDisconnect && activePlayer
+        ? [activePlayer.name]
+        : disconnectedHumans.map((p) => p.name),
+      disconnectedPlayerIds: disconnectedHumans.map((p) => p.id),
+    };
+  }
+
   getSnapshot(): RoomPublicSnapshot {
     const participants: RoomParticipantSummary[] = [];
+    const disconnectedPlayerIds: string[] = [];
 
     if (this.gameState) {
       for (const p of this.gameState.players) {
         const sess = this.sessions.get(p.id);
+        const connected = p.isBot ? true : Boolean(sess?.connected);
+        if (!p.isBot && !connected) {
+          disconnectedPlayerIds.push(p.id);
+        }
         participants.push({
           playerId: p.id,
           displayName: p.name,
           isHost: Boolean(sess?.isHost),
           isBot: p.isBot,
           botDifficulty: p.botDifficulty,
-          connected: p.isBot ? true : Boolean(sess?.connected),
+          connected,
         });
       }
     } else {
       for (const sess of this.sessions.values()) {
         if (sess.isSpectator) continue;
+        if (!sess.connected) {
+          disconnectedPlayerIds.push(sess.playerId);
+        }
         participants.push({
           playerId: sess.playerId,
           displayName: sess.displayName,
@@ -166,20 +358,33 @@ export class HostRoomManager {
       rules: this.config.rules,
       status: this.status,
       participants,
+      disconnectedPlayerIds,
+    };
+  }
+
+  private buildVisibleStateForPlayer(playerId: string): ClientVisibleGameState | null {
+    if (!this.gameState) return null;
+    const meta = this.getDisconnectMeta();
+    const base = getClientVisibleState(this.gameState, playerId);
+    if (this.config.hostMode === 'SPECTATOR' && playerId === this.hostPlayerId) {
+      return {
+        ...base,
+        selfHand: [],
+        selfCalledUno: false,
+        stateVersion: this.stateVersion,
+        ...meta,
+      };
+    }
+    return {
+      ...base,
+      stateVersion: this.stateVersion,
+      ...meta,
     };
   }
 
   getHostVisibleGameState(): ClientVisibleGameState | null {
     if (!this.gameState || !this.hostPlayerId) return null;
-    if (this.config.hostMode === 'SPECTATOR') {
-      const base = getClientVisibleState(this.gameState, this.hostPlayerId);
-      return {
-        ...base,
-        selfHand: [],
-        selfCalledUno: false,
-      };
-    }
-    return getClientVisibleState(this.gameState, this.hostPlayerId);
+    return this.buildVisibleStateForPlayer(this.hostPlayerId);
   }
 
   getAuthoritativeGameState(): GameState | null {
@@ -194,24 +399,52 @@ export class HostRoomManager {
     void this.transport.sendToClient(connectionId, JSON.stringify(msg));
   }
 
-  private syncAllClients(excludePlayerId?: string): void {
+  private syncAllClients(excludePlayerId?: string, forceFullSync = false): void {
     const snapshot = this.getSnapshot();
     for (const sess of this.sessions.values()) {
       if (sess.isHost || !sess.connected || !sess.connectionId) continue;
       if (sess.playerId === excludePlayerId) continue;
 
       if (this.gameState) {
-        const clientState = getClientVisibleState(this.gameState, sess.playerId);
-        this.sendMessage(sess.connectionId, {
-          type: 'STATE_SYNC',
-          room: snapshot,
-          gameState: clientState,
-        });
+        const nextView = this.buildVisibleStateForPlayer(sess.playerId);
+        if (!nextView) continue;
+
+        const prevView = this.lastSentStateByPlayer.get(sess.playerId);
+        const prevRoom = this.lastSentRoomByPlayer.get(sess.playerId) ?? null;
+        const prevVer = this.lastSentVersionByPlayer.get(sess.playerId);
+
+        if (forceFullSync || !prevView || prevVer === undefined) {
+          this.sendMessage(sess.connectionId, {
+            type: 'STATE_SYNC',
+            room: snapshot,
+            gameState: nextView,
+          });
+        } else {
+          const delta = buildStateDelta(
+            prevView,
+            nextView,
+            prevVer,
+            this.stateVersion,
+            snapshot,
+            prevRoom
+          );
+          if (delta) {
+            this.sendMessage(sess.connectionId, {
+              type: 'STATE_DELTA',
+              delta,
+            });
+          }
+        }
+
+        this.lastSentStateByPlayer.set(sess.playerId, nextView);
+        this.lastSentRoomByPlayer.set(sess.playerId, snapshot);
+        this.lastSentVersionByPlayer.set(sess.playerId, this.stateVersion);
       } else {
         this.sendMessage(sess.connectionId, {
           type: 'ROOM_UPDATE',
           room: snapshot,
         });
+        this.lastSentRoomByPlayer.set(sess.playerId, snapshot);
       }
     }
     this.emitHostUpdate();
@@ -259,13 +492,37 @@ export class HostRoomManager {
       return;
     }
 
+    if (msg.type === 'RESYNC_REQUEST') {
+      if (this.gameState) {
+        const snapshot = this.getSnapshot();
+        const visible = this.buildVisibleStateForPlayer(session.playerId);
+        if (visible) {
+          this.sendMessage(connectionId, {
+            type: 'STATE_SYNC',
+            room: snapshot,
+            gameState: visible,
+          });
+          this.lastSentStateByPlayer.set(session.playerId, visible);
+          this.lastSentRoomByPlayer.set(session.playerId, snapshot);
+          this.lastSentVersionByPlayer.set(session.playerId, this.stateVersion);
+        }
+      }
+      return;
+    }
+
     if (msg.type === 'LEAVE_ROOM') {
       this.handleLeaveRoom(connectionId, session);
       return;
     }
 
     if (msg.type === 'GAME_ACTION') {
-      this.handleRemoteGameAction(connectionId, session, msg.actionId, msg.action);
+      this.handleRemoteGameAction(
+        connectionId,
+        session,
+        msg.actionId,
+        msg.action,
+        msg.actionSeq
+      );
     }
   }
 
@@ -297,13 +554,12 @@ export class HostRoomManager {
       return;
     }
 
-    // Check Reconnect Token first so an existing player can rejoin even if original token was Single Game
+    // Check Reconnect Token first so an existing player can rejoin seamlessly without losing seat/cards
     if (msg.reconnectToken) {
       const existing = Array.from(this.sessions.values()).find(
         (s) => s.reconnectToken === msg.reconnectToken && !s.isHost
       );
       if (existing) {
-        // Also ensure caller still knows either the persistent room token OR the roomId
         const knowsPersistent = msg.roomAuthToken === this.config.roomAuthToken;
         const usedValidSingleToken = this.singleGameTokens.has(msg.roomAuthToken);
         if (!knowsPersistent && !usedValidSingleToken) {
@@ -319,21 +575,32 @@ export class HostRoomManager {
         }
         existing.connectionId = connectionId;
         existing.connected = true;
+        existing.disconnectedAt = null;
         existing.lastHeartbeatAt = Date.now();
         this.connectionToPlayerId.set(connectionId, existing.playerId);
 
-        const visible = this.gameState
-          ? getClientVisibleState(this.gameState, existing.playerId)
-          : null;
+        if (this.gameState) {
+          this.stateVersion += 1;
+        }
+
+        const snapshot = this.getSnapshot();
+        const visible = this.buildVisibleStateForPlayer(existing.playerId);
 
         this.sendMessage(connectionId, {
           type: 'JOIN_ACCEPTED',
           playerId: existing.playerId,
           sessionId: existing.sessionId,
           reconnectToken: existing.reconnectToken,
-          room: this.getSnapshot(),
+          room: snapshot,
           gameState: visible,
         });
+
+        if (visible) {
+          this.lastSentStateByPlayer.set(existing.playerId, visible);
+          this.lastSentRoomByPlayer.set(existing.playerId, snapshot);
+          this.lastSentVersionByPlayer.set(existing.playerId, this.stateVersion);
+        }
+
         this.syncAllClients(existing.playerId);
         return;
       }
@@ -392,6 +659,7 @@ export class HostRoomManager {
       isHost: false,
       isSpectator: false,
       connected: true,
+      disconnectedAt: null,
       lastHeartbeatAt: Date.now(),
     };
 
@@ -421,7 +689,9 @@ export class HostRoomManager {
       this.sessions.delete(session.playerId);
     } else {
       session.connected = false;
+      session.disconnectedAt = Date.now();
       session.connectionId = null;
+      this.stateVersion += 1;
     }
     this.syncAllClients();
   }
@@ -437,18 +707,26 @@ export class HostRoomManager {
     if (this.status === 'LOBBY') {
       this.sessions.delete(playerId);
     } else {
+      // Preserve player seat & hand during active match so they can reconnect safely
       session.connected = false;
+      session.disconnectedAt = Date.now();
       session.connectionId = null;
+      this.stateVersion += 1;
     }
     this.syncAllClients();
   }
 
-  checkHeartbeats(now = Date.now()): void {
+  /**
+   * Checks player heartbeats. Returns true only if connection status changed
+   * so the Host UI does not emit redundant renders or Wi-Fi frames.
+   */
+  checkHeartbeats(now = Date.now()): boolean {
     let changed = false;
     for (const sess of this.sessions.values()) {
       if (sess.isHost || !sess.connected) continue;
       if (now - sess.lastHeartbeatAt > HEARTBEAT_TIMEOUT_MS) {
         sess.connected = false;
+        sess.disconnectedAt = now;
         if (sess.connectionId) {
           this.connectionToPlayerId.delete(sess.connectionId);
           void this.transport.kickClient(
@@ -461,8 +739,12 @@ export class HostRoomManager {
       }
     }
     if (changed) {
+      if (this.gameState) {
+        this.stateVersion += 1;
+      }
       this.syncAllClients();
     }
+    return changed;
   }
 
   kickPlayer(playerId: string, reason = 'Dikeluarkan oleh host'): void {
@@ -479,7 +761,9 @@ export class HostRoomManager {
       this.sessions.delete(playerId);
     } else {
       sess.connected = false;
+      sess.disconnectedAt = Date.now();
       sess.connectionId = null;
+      this.stateVersion += 1;
     }
     this.syncAllClients();
   }
@@ -557,6 +841,13 @@ export class HostRoomManager {
         ? COLORS[Math.floor(Math.random() * COLORS.length)]
         : firstCard.color;
 
+    this.stateVersion = 1;
+    this.processedActionIds.clear();
+    this.lastActionSeqByPlayer.clear();
+    this.lastSentStateByPlayer.clear();
+    this.lastSentRoomByPlayer.clear();
+    this.lastSentVersionByPlayer.clear();
+
     this.gameState = {
       matchId: `lan_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       rules: { ...this.config.rules },
@@ -586,7 +877,7 @@ export class HostRoomManager {
     };
 
     this.status = 'IN_GAME';
-    this.syncAllClients();
+    this.syncAllClients(undefined, true);
     return { ok: true };
   }
 
@@ -594,7 +885,8 @@ export class HostRoomManager {
     connectionId: string,
     session: PlayerSession,
     actionId: string,
-    action: Extract<ClientToHostMessage, { type: 'GAME_ACTION' }>['action']
+    action: Extract<ClientToHostMessage, { type: 'GAME_ACTION' }>['action'],
+    actionSeq?: number
   ): void {
     if (session.isSpectator) {
       this.sendMessage(connectionId, {
@@ -605,7 +897,12 @@ export class HostRoomManager {
       return;
     }
 
-    const result = this.applyAuthoritativeAction(session.playerId, actionId, action);
+    const result = this.applyAuthoritativeAction(
+      session.playerId,
+      actionId,
+      action,
+      actionSeq
+    );
     if (result.error) {
       this.sendMessage(connectionId, {
         type: 'ACTION_REJECTED',
@@ -628,10 +925,30 @@ export class HostRoomManager {
   private applyAuthoritativeAction(
     playerId: string,
     actionId: string,
-    action: Extract<ClientToHostMessage, { type: 'GAME_ACTION' }>['action']
-  ): { ok: boolean; error?: string } {
+    action: Extract<ClientToHostMessage, { type: 'GAME_ACTION' }>['action'],
+    actionSeq?: number
+  ): { ok: boolean; error?: string; deduplicated?: boolean } {
     if (!this.gameState || this.status !== 'IN_GAME') {
       return { ok: false, error: 'Permainan belum aktif.' };
+    }
+
+    // Strict idempotent deduplication by actionId & per-player sequence number
+    if (this.processedActionIds.has(actionId)) {
+      return { ok: true, deduplicated: true };
+    }
+    if (typeof actionSeq === 'number') {
+      const lastSeq = this.lastActionSeqByPlayer.get(playerId) ?? 0;
+      if (actionSeq <= lastSeq) {
+        return { ok: true, deduplicated: true };
+      }
+    }
+
+    const disconnectMeta = this.getDisconnectMeta();
+    if (disconnectMeta.pausedByDisconnect) {
+      return {
+        ok: false,
+        error: `Permainan dijeda sementara menunggu ${disconnectMeta.pausedPlayerNames.join(', ')} tersambung kembali.`,
+      };
     }
 
     let outcome: { state: GameState; error?: string };
@@ -650,16 +967,17 @@ export class HostRoomManager {
         outcome = applyDrawCard(this.gameState, playerId, actionId);
         break;
       case 'PASS_TURN':
-        outcome = applyPassAfterDraw(this.gameState, playerId);
+        outcome = applyPassAfterDraw(this.gameState, playerId, actionId);
         break;
       case 'CALL_UNO':
-        outcome = applyCallUno(this.gameState, playerId);
+        outcome = applyCallUno(this.gameState, playerId, actionId);
         break;
       case 'CATCH_UNO':
         outcome = applyCatchUnoPenalty(
           this.gameState,
           playerId,
-          action.targetPlayerId
+          action.targetPlayerId,
+          actionId
         );
         break;
     }
@@ -668,6 +986,12 @@ export class HostRoomManager {
       return { ok: false, error: outcome.error };
     }
 
+    this.processedActionIds.add(actionId);
+    if (typeof actionSeq === 'number') {
+      this.lastActionSeqByPlayer.set(playerId, actionSeq);
+    }
+
+    this.stateVersion += 1;
     this.gameState = outcome.state;
     if (this.gameState.winnerId) {
       this.status = 'FINISHED';
@@ -678,6 +1002,9 @@ export class HostRoomManager {
 
   stepBotTurnIfNeeded(): boolean {
     if (!this.gameState || this.status !== 'IN_GAME' || this.gameState.winnerId) {
+      return false;
+    }
+    if (this.getDisconnectMeta().pausedByDisconnect) {
       return false;
     }
     const actor = this.gameState.players[this.gameState.currentTurnIndex];
@@ -697,7 +1024,7 @@ export class HostRoomManager {
               ? 0.8
               : 0.95;
         if (Math.random() < chance) {
-          working = applyCallUno(working, actor.id).state;
+          working = applyCallUno(working, actor.id, randomId('bot_uno')).state;
         }
       }
       working = applyPlayCard(
@@ -710,9 +1037,10 @@ export class HostRoomManager {
     } else if (decision.type === 'DRAW') {
       working = applyDrawCard(working, actor.id, randomId('bot_act')).state;
     } else {
-      working = applyPassAfterDraw(working, actor.id).state;
+      working = applyPassAfterDraw(working, actor.id, randomId('bot_act')).state;
     }
 
+    this.stateVersion += 1;
     this.gameState = working;
     if (this.gameState.winnerId) {
       this.status = 'FINISHED';

@@ -31,7 +31,7 @@ import {
   FrontPerspectiveTable,
   useIsPortrait,
 } from '../components/FrontPerspectiveTable';
-import { OpponentSeat } from '../components/OpponentSeat';
+import { OpponentSeat, SeatEventBadge } from '../components/OpponentSeat';
 import { PauseMenuModal } from '../components/PauseMenuModal';
 import { PlayerHand } from '../components/PlayerHand';
 import { SpecialEffectBanner } from '../components/SpecialEffectBanner';
@@ -71,6 +71,9 @@ export const GameBoardScreen: React.FC<GameBoardScreenProps> = ({
     actorName: string;
     chosenColor?: CardColor;
   } | null>(null);
+  const [seatEventMap, setSeatEventMap] = useState<
+    Record<string, SeatEventBadge>
+  >({});
 
   const finishedReportedRef = useRef(false);
   const lastSoundEventIdRef = useRef<string | null>(null);
@@ -132,8 +135,49 @@ export const GameBoardScreen: React.FC<GameBoardScreenProps> = ({
         actorName: evt.actorName,
         chosenColor: evt.chosenColor,
       });
+
+      const nextSeatMap: Record<string, SeatEventBadge> = {};
+      if (evt.effectType === 'SKIP' && evt.targetPlayerId) {
+        nextSeatMap[evt.targetPlayerId] = {
+          key: evt.id,
+          label: 'DILEWATI!',
+          tone: 'skip',
+        };
+      } else if (evt.effectType === 'DRAW2' && evt.targetPlayerId) {
+        nextSeatMap[evt.targetPlayerId] = {
+          key: evt.id,
+          label: '+2 KARTU!',
+          tone: 'penalty',
+        };
+      } else if (evt.effectType === 'WILD4' && evt.targetPlayerId) {
+        nextSeatMap[evt.targetPlayerId] = {
+          key: evt.id,
+          label: '+4 KARTU!',
+          tone: 'penalty',
+        };
+      } else if (evt.effectType === 'PENALTY' && evt.targetPlayerId) {
+        nextSeatMap[evt.targetPlayerId] = {
+          key: evt.id,
+          label: 'PENALTI +2!',
+          tone: 'penalty',
+        };
+      } else if (evt.effectType === 'UNO') {
+        nextSeatMap[evt.actorId] = {
+          key: evt.id,
+          label: 'UNO!',
+          tone: 'uno',
+        };
+      }
+      if (Object.keys(nextSeatMap).length > 0) {
+        setSeatEventMap(nextSeatMap);
+      }
+
       const clearTimer = window.setTimeout(() => {
         setActiveEffect((curr) => (curr?.key === evt.id ? null : curr));
+        setSeatEventMap((curr) => {
+          const first = Object.values(curr)[0];
+          return first?.key === evt.id ? {} : curr;
+        });
       }, 1150);
       return () => window.clearTimeout(clearTimer);
     }
@@ -392,7 +436,7 @@ export const GameBoardScreen: React.FC<GameBoardScreenProps> = ({
           <>
             <div className="flex items-center gap-2 text-xs sm:text-sm text-emerald-100/85">
               <span className="font-display font-extrabold text-amber-300 tracking-wide">
-                UNO ARENA
+                MABAR UNO
               </span>
               <span aria-hidden="true">·</span>
               <span>
@@ -442,43 +486,61 @@ export const GameBoardScreen: React.FC<GameBoardScreenProps> = ({
             }
             onCatchUno={handleCatchOpponentUno}
             compact={opponents.length >= 4}
+            seatEvent={seatEventMap[opp.id] ?? null}
           />
         ))}
-        turnBanner={
-          <div
-            key={`turn_${gameState.turnCount}_${currentPlayer?.id ?? ''}`}
-            className="animate-turn-pop flex flex-col items-center"
-          >
+        turnBanner={(() => {
+          const mustDraw =
+            isHumanTurn &&
+            (gameState.pendingDrawCount > 0 ||
+              (playableCardIds.size === 0 && !gameState.hasDrawnThisTurn));
+
+          const primaryLabel = gameState.winnerId
+            ? `GILIRAN BERAKHIR · Pemenang: ${gameState.matchResult?.winnerName}`
+            : pendingWildCard
+              ? 'PILIH WARNA'
+              : mustDraw
+                ? `KAMU HARUS MENGAMBIL KARTU${gameState.pendingDrawCount > 0 ? ` (+${gameState.pendingDrawCount})` : ''}`
+                : isHumanTurn
+                  ? `GILIRAN KAMU (${humanPlayer.name})`
+                  : `GILIRAN ${(currentPlayer?.name ?? '...').toUpperCase()}`;
+
+          const subLabel = gameState.winnerId
+            ? gameState.lastEvent?.message
+            : isHumanTurn
+              ? pendingWildCard
+                ? 'Pilih warna aktif meja untuk kartu Wild.'
+                : mustDraw
+                  ? 'Tap tumpukan kartu Deck atau tombol Ambil Kartu.'
+                  : gameState.lastEvent?.message
+              : `MENUNGGU PEMAIN LAIN · ${currentPlayer?.isBot ? 'BOT sedang berpikir...' : ''}`;
+
+          return (
             <div
-              className={`px-4 py-1.5 rounded-xl border text-xs sm:text-sm font-display font-bold tracking-wide shadow-md ${
-                gameState.winnerId
-                  ? 'bg-amber-400 text-slate-950 border-amber-200'
-                  : isHumanTurn
-                    ? gameState.pendingDrawCount > 0
-                      ? 'bg-red-950/95 text-red-100 border-red-400/75'
-                      : 'bg-emerald-950/95 text-amber-300 border-amber-400/75'
-                    : 'bg-black/55 text-emerald-100 border-white/10'
-              }`}
+              key={`turn_${gameState.turnCount}_${currentPlayer?.id ?? ''}_${mustDraw ? 'd' : 'p'}`}
+              className="animate-turn-pop flex flex-col items-center"
             >
-              {gameState.winnerId ? (
-                <span>Pemenang: {gameState.matchResult?.winnerName}</span>
-              ) : isHumanTurn ? (
-                <span>
-                  Giliran Kamu ({humanPlayer.name})
-                  {gameState.pendingDrawCount > 0 &&
-                    ` · Tumpukan +${gameState.pendingDrawCount}`}
-                </span>
-              ) : (
-                <span>Giliran {currentPlayer?.name}...</span>
+              <div
+                className={`px-4 py-1.5 rounded-xl border text-xs sm:text-sm font-display font-extrabold tracking-wide shadow-md ${
+                  gameState.winnerId
+                    ? 'bg-amber-400 text-slate-950 border-amber-200'
+                    : isHumanTurn
+                      ? mustDraw
+                        ? 'bg-red-950/95 text-red-100 border-red-400/80 ring-2 ring-red-400/35'
+                        : 'bg-emerald-950/95 text-amber-300 border-amber-400/80 ring-2 ring-amber-400/30'
+                      : 'bg-black/60 text-emerald-100 border-white/15'
+                }`}
+              >
+                <span>{primaryLabel}</span>
+              </div>
+              {subLabel && (
+                <div className="mt-0.5 text-[11px] sm:text-xs text-emerald-100/85 truncate max-w-[92vw] sm:max-w-md drop-shadow">
+                  {subLabel}
+                </div>
               )}
             </div>
-            {gameState.lastEvent && (
-              <div className="mt-0.5 text-[11px] sm:text-xs text-emerald-100/85 truncate max-w-[92vw] sm:max-w-md drop-shadow">
-                {gameState.lastEvent.message}
-              </div>
-            )}
-          </div>
-        }
+          );
+        })()}
         topDiscard={topDiscard}
         prevDiscard={prevDiscard}
         activeColor={gameState.activeColor}
@@ -495,6 +557,8 @@ export const GameBoardScreen: React.FC<GameBoardScreenProps> = ({
         onDrawCard={handleDrawCard}
         onPassTurn={handlePassTurn}
         isMyTurn={isHumanTurn}
+        lastEvent={gameState.lastEvent}
+        selfPlayerId={humanPlayer.id}
         bottomDock={
           <footer
             className={`relative z-30 flex flex-col safe-pb transition-colors duration-150 ${

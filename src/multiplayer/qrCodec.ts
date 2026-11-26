@@ -28,7 +28,7 @@ export function parseQrPayload(
   try {
     parsed = JSON.parse(rawText);
   } catch {
-    return { ok: false, error: 'QR Code tidak berisi format JSON UNO Arena yang valid.' };
+    return { ok: false, error: 'QR Code tidak berisi format JSON MABAR UNO yang valid.' };
   }
 
   if (!parsed || typeof parsed !== 'object') {
@@ -76,12 +76,13 @@ export function parseQrPayload(
  * Renders a real ISO/IEC 18004 QR Code data URL using the `qrcode` library.
  */
 export async function generateQrDataUrl(
-  payload: QRConnectionPayload
+  payload: QRConnectionPayload,
+  width = 360
 ): Promise<string> {
   const encoded = encodeQrPayload(payload);
   return QRCode.toDataURL(encoded, {
-    width: 240,
-    margin: 2,
+    width,
+    margin: 4,
     errorCorrectionLevel: 'M',
     color: {
       dark: '#062417',

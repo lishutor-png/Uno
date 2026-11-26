@@ -500,6 +500,15 @@ export const HostRoomScreen: React.FC<HostRoomScreenProps> = ({
               {activeQrPayload ? (
                 <RealQrCodeDisplay
                   payload={activeQrPayload}
+                  joinedCount={roomSnapshot?.participants.length ?? 0}
+                  maxPlayers={maxPlayers}
+                  roomStatusLabel={
+                    roomSnapshot?.status === 'IN_GAME'
+                      ? 'Permainan berlangsung'
+                      : (roomSnapshot?.participants.length ?? 0) + (fillBots ? maxPlayers - (roomSnapshot?.participants.length ?? 0) : 0) >= 2
+                        ? 'Siap bermain'
+                        : 'Menunggu pemain'
+                  }
                   caption={
                     activeQrTab === 'PERSISTENT_ROOM'
                       ? 'Berlaku selama room aktif (termasuk rejoin)'

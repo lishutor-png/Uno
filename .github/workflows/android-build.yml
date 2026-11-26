@@ -1,4 +1,4 @@
-name: Build UNO Arena Android Debug APK
+name: Build MABAR UNO Android Debug APK
 
 on:
   push:
@@ -97,7 +97,7 @@ jobs:
       - name: Upload Debug APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: uno-arena-debug-apk
+          name: mabar-uno-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14

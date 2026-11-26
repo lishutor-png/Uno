@@ -38,27 +38,29 @@ export const PlayerHand: React.FC<PlayerHandProps> = ({
           let cardStyle: React.CSSProperties = {};
           if (layoutMode === 'fan') {
             const offset = idx - centerIndex;
-            const maxAngle = Math.min(20, count * 2.0);
+            const maxAngle = Math.min(18, count * 1.8);
             const angle =
               count > 1 ? (offset / Math.max(1, centerIndex)) * maxAngle : 0;
             const dropY =
-              Math.abs(offset) * Math.abs(offset) * (count > 9 ? 0.45 : 0.9);
-            const overlap = count > 12 ? '-34px' : count > 8 ? '-26px' : '-16px';
+              Math.abs(offset) * Math.abs(offset) * (count > 9 ? 0.35 : 0.75);
+            const overlap =
+              count > 12 ? '-26px' : count > 8 ? '-20px' : count > 5 ? '-12px' : '-6px';
 
             cardStyle = {
               transform: `rotate(${angle.toFixed(2)}deg) translateY(${dropY.toFixed(1)}px)`,
               transformOrigin: 'bottom center',
               marginLeft: idx === 0 ? '0px' : overlap,
               zIndex: idx + 1,
-              animationDelay: isInitialDeal ? `${Math.min(idx * 45, 270)}ms` : '0ms',
+              animationDelay: isInitialDeal ? `${Math.min(idx * 40, 240)}ms` : '0ms',
             };
           } else {
-            // Mode Tumpuk (Stack): straight compact row with tighter overlap
-            const overlap = count > 12 ? '-40px' : count > 7 ? '-32px' : '-22px';
+            // Mode Tumpuk (Stack): straight compact row with readable corner indices
+            const overlap =
+              count > 12 ? '-32px' : count > 7 ? '-24px' : count > 4 ? '-16px' : '-10px';
             cardStyle = {
               marginLeft: idx === 0 ? '0px' : overlap,
               zIndex: idx + 1,
-              animationDelay: isInitialDeal ? `${Math.min(idx * 45, 270)}ms` : '0ms',
+              animationDelay: isInitialDeal ? `${Math.min(idx * 40, 240)}ms` : '0ms',
             };
           }
 

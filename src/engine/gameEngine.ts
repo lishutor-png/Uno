@@ -265,6 +265,8 @@ export function applyPlayCard(
   let nextPendingDrawType = state.pendingDrawType;
   let effectType: SpecialEffectType | undefined;
   let effectMessage = `${actorAfterPlay.name} memainkan kartu.`;
+  let targetPlayerId: string | undefined;
+  let targetPlayerName: string | undefined;
 
   const totalPlayers = updatedPlayers.length;
 
@@ -274,6 +276,14 @@ export function applyPlayCard(
     if (totalPlayers === 2) {
       // Official 2-player UNO rule: Reverse acts like Skip
       stepCount = 2;
+      const skippedIndex = advanceIndex(
+        state.currentTurnIndex,
+        nextDirection,
+        1,
+        totalPlayers
+      );
+      targetPlayerId = updatedPlayers[skippedIndex].id;
+      targetPlayerName = updatedPlayers[skippedIndex].name;
       effectMessage = `${actorAfterPlay.name} memainkan Reverse (berlaku seperti Skip)!`;
     } else {
       effectMessage = `${actorAfterPlay.name} membalik arah permainan!`;
@@ -287,21 +297,25 @@ export function applyPlayCard(
       1,
       totalPlayers
     );
+    targetPlayerId = updatedPlayers[skippedIndex].id;
+    targetPlayerName = updatedPlayers[skippedIndex].name;
     effectMessage = `${updatedPlayers[skippedIndex].name} dilewati (Skip)!`;
   } else if (card.value === 'draw2') {
     effectType = 'DRAW2';
+    const victimIndex = advanceIndex(
+      state.currentTurnIndex,
+      nextDirection,
+      1,
+      totalPlayers
+    );
+    targetPlayerId = updatedPlayers[victimIndex].id;
+    targetPlayerName = updatedPlayers[victimIndex].name;
     if (state.rules.stackPlus2) {
       nextPendingDrawCount += 2;
       nextPendingDrawType = 'draw2';
       effectMessage = `${actorAfterPlay.name} menumpuk +2 (Total +${nextPendingDrawCount})!`;
     } else {
       // Classic rule: next player immediately draws 2 and loses turn
-      const victimIndex = advanceIndex(
-        state.currentTurnIndex,
-        nextDirection,
-        1,
-        totalPlayers
-      );
       const drawOutcome = drawCardsFromPiles(nextDrawPile, mutableDiscardPile, 2);
       nextDrawPile = drawOutcome.nextDrawPile;
       mutableDiscardPile = drawOutcome.nextDiscardPile;
@@ -316,17 +330,19 @@ export function applyPlayCard(
     }
   } else if (card.value === 'wild4') {
     effectType = 'WILD4';
+    const victimIndex = advanceIndex(
+      state.currentTurnIndex,
+      nextDirection,
+      1,
+      totalPlayers
+    );
+    targetPlayerId = updatedPlayers[victimIndex].id;
+    targetPlayerName = updatedPlayers[victimIndex].name;
     if (state.rules.stackPlus4) {
       nextPendingDrawCount += 4;
       nextPendingDrawType = 'wild4';
       effectMessage = `${actorAfterPlay.name} memainkan Wild +4 (Total +${nextPendingDrawCount})!`;
     } else {
-      const victimIndex = advanceIndex(
-        state.currentTurnIndex,
-        nextDirection,
-        1,
-        totalPlayers
-      );
       const drawOutcome = drawCardsFromPiles(nextDrawPile, mutableDiscardPile, 4);
       nextDrawPile = drawOutcome.nextDrawPile;
       mutableDiscardPile = drawOutcome.nextDiscardPile;
@@ -356,6 +372,8 @@ export function applyPlayCard(
     timestamp: Date.now(),
     actorId: actorAfterPlay.id,
     actorName: actorAfterPlay.name,
+    targetPlayerId,
+    targetPlayerName,
     type: 'PLAY_CARD',
     message: effectMessage,
     effectType,
@@ -553,10 +571,14 @@ export function applyDrawCard(
  */
 export function applyPassAfterDraw(
   state: GameState,
-  playerId: string
+  playerId: string,
+  actionId?: string
 ): { state: GameState; error?: string } {
   if (state.winnerId) {
     return { state, error: 'Pertandingan sudah berakhir.' };
+  }
+  if (actionId && state.processedActionIds.includes(actionId)) {
+    return { state, error: 'Aksi duplikat diabaikan.' };
   }
   const currentPlayer = state.players[state.currentTurnIndex];
   if (!currentPlayer || currentPlayer.id !== playerId) {
@@ -588,6 +610,9 @@ export function applyPassAfterDraw(
         type: 'PASS_TURN',
         message: `${currentPlayer.name} menyimpan kartu dan melewati giliran.`,
       },
+      processedActionIds: actionId
+        ? [...state.processedActionIds.slice(-49), actionId]
+        : state.processedActionIds,
     },
   };
 }
@@ -597,8 +622,12 @@ export function applyPassAfterDraw(
  */
 export function applyCallUno(
   state: GameState,
-  playerId: string
+  playerId: string,
+  actionId?: string
 ): { state: GameState; error?: string } {
+  if (actionId && state.processedActionIds.includes(actionId)) {
+    return { state, error: 'Aksi duplikat diabaikan.' };
+  }
   const player = state.players.find((p) => p.id === playerId);
   if (!player) {
     return { state, error: 'Pemain tidak ditemukan.' };
@@ -626,6 +655,9 @@ export function applyCallUno(
         message: `${player.name} berteriak UNO!`,
         effectType: 'UNO',
       },
+      processedActionIds: actionId
+        ? [...state.processedActionIds.slice(-49), actionId]
+        : state.processedActionIds,
     },
   };
 }
@@ -636,8 +668,12 @@ export function applyCallUno(
 export function applyCatchUnoPenalty(
   state: GameState,
   catcherId: string,
-  targetPlayerId: string
+  targetPlayerId: string,
+  actionId?: string
 ): { state: GameState; error?: string } {
+  if (actionId && state.processedActionIds.includes(actionId)) {
+    return { state, error: 'Aksi duplikat diabaikan.' };
+  }
   if (!state.rules.unoPenalty) {
     return { state, error: 'Aturan penalti UNO tidak aktif.' };
   }
@@ -675,10 +711,15 @@ export function applyCatchUnoPenalty(
         timestamp: Date.now(),
         actorId: catcher.id,
         actorName: catcher.name,
+        targetPlayerId: target.id,
+        targetPlayerName: target.name,
         type: 'UNO_PENALTY',
         message: `${catcher.name} menangkap ${target.name} lupa UNO! (+2 kartu)`,
         effectType: 'PENALTY',
       },
+      processedActionIds: actionId
+        ? [...state.processedActionIds.slice(-49), actionId]
+        : state.processedActionIds,
     },
   };
 }

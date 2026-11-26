@@ -1,6 +1,6 @@
-# UNO ARENA — Android Offline Multiplayer Card Game
+# MABAR UNO — Android Offline Multiplayer Card Game
 
-Aplikasi permainan kartu **UNO ARENA** yang dirancang untuk berjalan secara **offline** di Android dengan antarmuka **mobile-responsive** (Portrait di Menu & Single Player, Portrait/Landscape di Multiplayer 2–4 pemain, Landscape di Multiplayer 5–8 pemain), arsitektur modular React + TypeScript game engine, penyimpanan lokal, serta lapisan jaringan multiplayer native Android (Wi-Fi LAN & Wi-Fi Direct).
+Aplikasi permainan kartu **MABAR UNO** (Main Bareng UNO) yang dirancang untuk berjalan secara **offline** di Android dengan antarmuka **mobile-responsive** (Portrait di Menu & Single Player, Portrait/Landscape di Multiplayer 2–4 pemain, Landscape di Multiplayer 5–8 pemain), arsitektur modular React + TypeScript game engine, penyimpanan lokal, serta lapisan jaringan multiplayer native Android (Wi-Fi LAN & Wi-Fi Direct).
 
 ---
 
@@ -110,7 +110,7 @@ chmod +x gradlew
 ```
 
 **Opsi C — Build Otomatis via GitHub Actions:**
-Push repositori ke GitHub (branch `main` atau `master`) atau jalankan manual lewat tab **Actions → Build UNO Arena Android Debug APK → Run workflow**, lalu unduh artifact `uno-arena-debug-apk`.
+Push repositori ke GitHub (branch `main` atau `master`) atau jalankan manual lewat tab **Actions → Build MABAR UNO Android Debug APK → Run workflow**, lalu unduh artifact `mabar-uno-debug-apk`.
 
 ### 6. Build Release APK
 Untuk menghasilkan APK rilis yang ditandatangani secara aman (jangan pernah menyimpan file `.jks` atau password keystore di repositori):
@@ -127,7 +127,7 @@ Untuk menghasilkan APK rilis yang ditandatangani secara aman (jangan pernah meny
 - **Manual:** Salin `app-debug.apk` ke HP Android, buka file tersebut dari File Manager, dan izinkan **Install from unknown sources / Instal aplikasi tidak dikenal**.
 
 ### 8. Menguji Multiplayer Offline pada 2 atau Lebih HP Android
-1. **Pastikan seluruh HP terpasang APK UNO Arena versi yang sama.**
+1. **Pastikan seluruh HP terpasang APK MABAR UNO versi yang sama.**
 2. **Uji Mode Wi-Fi LAN (Hotspot / Router Lokal):**
    - Nyalakan Hotspot Wi-Fi di **HP A** (atau hubungkan semua HP ke 1 router lokal; paket data/internet tidak diperlukan).
    - Pada **HP A**, buka **Multiplayer → Buat Room (Host)**, atur jumlah pemain (2–8), mode Host (Ikut Bermain / Spectator), dan aturan permainan.

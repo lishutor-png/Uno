@@ -1,5 +1,6 @@
 import React from 'react';
 import { ArrowLeft, Keyboard, QrCode, Radio, Server, Wifi } from 'lucide-react';
+import { MabarUnoLogo } from '../components/MabarUnoLogo';
 import { getNativeMultiplayerCapabilities } from '../multiplayer/nativeBridge';
 
 interface LobbyMultiplayerScreenProps {
@@ -20,22 +21,30 @@ export const LobbyMultiplayerScreen: React.FC<LobbyMultiplayerScreenProps> = ({
   const caps = getNativeMultiplayerCapabilities();
 
   return (
-    <div className="w-full h-full overflow-y-auto bg-gradient-to-br from-[#072e1e] via-[#041d13] to-[#02100a] px-4 sm:px-8 py-4 sm:py-6 flex flex-col">
-      <div className="flex items-center justify-between max-w-5xl w-full mx-auto mb-4">
+    <div className="w-full h-full overflow-y-auto bg-gradient-to-br from-[#072e1e] via-[#041d13] to-[#02100a] px-4 sm:px-8 py-4 sm:py-6 safe-pt safe-pb flex flex-col">
+      <div className="flex items-center justify-between gap-3 max-w-5xl w-full mx-auto mb-4">
         <button
           type="button"
           onClick={onBack}
-          className="min-h-[44px] px-4 rounded-xl bg-black/40 hover:bg-black/60 border border-white/15 flex items-center gap-2 text-sm font-semibold text-white cursor-pointer"
+          className="min-h-[44px] px-4 rounded-xl bg-black/40 hover:bg-black/60 border border-white/15 flex items-center gap-2 text-sm font-semibold text-white cursor-pointer shrink-0"
         >
           <ArrowLeft className="w-4 h-4" />
           <span>Kembali</span>
         </button>
 
-        <h1 className="font-display text-lg sm:text-2xl font-bold text-white">
-          Lobby Multiplayer Offline
-        </h1>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <MabarUnoLogo variant="icon" className="w-9 h-9 sm:w-10 sm:h-10 shrink-0" />
+          <div className="min-w-0">
+            <h1 className="font-display text-base sm:text-xl font-extrabold text-white truncate">
+              Lobby Multiplayer MABAR UNO
+            </h1>
+            <p className="text-[11px] text-emerald-200/75 hidden sm:block">
+              Main Bareng via Wi-Fi LAN &amp; Wi-Fi Direct Tanpa Internet
+            </p>
+          </div>
+        </div>
 
-        <div className="w-[96px] hidden sm:block" />
+        <div className="w-[88px] hidden sm:block" />
       </div>
 
       <div className="max-w-5xl w-full mx-auto flex-1 flex flex-col justify-center gap-4">

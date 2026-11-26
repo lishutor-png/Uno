@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { RotateCcw, RotateCw } from 'lucide-react';
-import { CardColor, UnoCard as UnoCardModel } from '../engine/types';
+import {
+  CardColor,
+  GameEventLog,
+  UnoCard as UnoCardModel,
+} from '../engine/types';
 import { COLOR_LABELS_ID, COLOR_SWATCH_STYLES } from '../utilities/cardHelpers';
 import { UnoCard } from './UnoCard';
 
@@ -39,14 +43,16 @@ interface FrontPerspectiveTableProps {
   onDrawCard: () => void;
   onPassTurn: () => void;
   isMyTurn: boolean;
+  lastEvent?: GameEventLog | null;
+  selfPlayerId?: string;
   bottomDock: React.ReactNode;
 }
 
 /**
- * Responsive 3D Front-Perspective UNO Arena stage:
- * - Portrait mode (Solo & 2-4p mobile): Tight, zero-waste vertical layout with oversized cards,
- *   BOT seats at top, turn & color status upper-center, large Discard & Draw piles center,
- *   and foreground hand + 48dp touch controls at bottom with safe areas.
+ * Responsive 3D Front-Perspective MABAR UNO stage:
+ * - Portrait mode (Solo & 2-4p mobile): Tight, zero-waste vertical layout with crisp cards,
+ *   opponents at top, turn & color status upper-center, Discard & Draw piles center,
+ *   and foreground hand + >=48dp touch controls at bottom with safe areas.
  * - Landscape mode (5-8p multiplayer & tablet): Wide 3D perspective arena with side medallion.
  */
 export const FrontPerspectiveTable: React.FC<FrontPerspectiveTableProps> = ({
@@ -65,6 +71,8 @@ export const FrontPerspectiveTable: React.FC<FrontPerspectiveTableProps> = ({
   onDrawCard,
   onPassTurn,
   isMyTurn,
+  lastEvent = null,
+  selfPlayerId,
   bottomDock,
 }) => {
   const isPortrait = useIsPortrait();
@@ -72,10 +80,16 @@ export const FrontPerspectiveTable: React.FC<FrontPerspectiveTableProps> = ({
   const [colorBurstKey, setColorBurstKey] = useState(0);
   const [reverseSpinKey, setReverseSpinKey] = useState(0);
   const [drawPulseKey, setDrawPulseKey] = useState(0);
+  const [flyingDraw, setFlyingDraw] = useState<{
+    key: string;
+    toSelf: boolean;
+  } | null>(null);
+  const [unoFlareKey, setUnoFlareKey] = useState<string | null>(null);
 
   const prevColorRef = useRef(activeColor);
   const prevDirRef = useRef(direction);
   const prevDeckRef = useRef(drawPileCount);
+  const lastProcessedEvtRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (prevColorRef.current !== activeColor) {
@@ -98,6 +112,35 @@ export const FrontPerspectiveTable: React.FC<FrontPerspectiveTableProps> = ({
     prevDeckRef.current = drawPileCount;
   }, [drawPileCount]);
 
+  useEffect(() => {
+    if (!lastEvent || lastEvent.id === lastProcessedEvtRef.current) return;
+    lastProcessedEvtRef.current = lastEvent.id;
+
+    if (
+      lastEvent.type === 'DRAW_CARD' ||
+      lastEvent.type === 'UNO_PENALTY' ||
+      (lastEvent.type === 'PLAY_CARD' &&
+        (lastEvent.effectType === 'DRAW2' || lastEvent.effectType === 'WILD4') &&
+        Boolean(lastEvent.targetPlayerId))
+    ) {
+      const targetId = lastEvent.targetPlayerId ?? lastEvent.actorId;
+      const toSelf = Boolean(selfPlayerId && targetId === selfPlayerId);
+      setFlyingDraw({ key: lastEvent.id, toSelf });
+      const t = window.setTimeout(() => {
+        setFlyingDraw((curr) => (curr?.key === lastEvent.id ? null : curr));
+      }, 360);
+      return () => window.clearTimeout(t);
+    }
+
+    if (lastEvent.type === 'CALL_UNO') {
+      setUnoFlareKey(lastEvent.id);
+      const t = window.setTimeout(() => {
+        setUnoFlareKey((curr) => (curr === lastEvent.id ? null : curr));
+      }, 540);
+      return () => window.clearTimeout(t);
+    }
+  }, [lastEvent, selfPlayerId]);
+
   const colorStyle = COLOR_SWATCH_STYLES[activeColor];
 
   return (
@@ -118,7 +161,7 @@ export const FrontPerspectiveTable: React.FC<FrontPerspectiveTableProps> = ({
       {/* Overhead Arena Spotlight */}
       <div className="pointer-events-none absolute top-[-10%] left-1/2 -translate-x-1/2 w-[78%] h-[48%] rounded-full bg-amber-200/10 blur-3xl" />
 
-      {/* 3D Perspective Card Table Surface (tight margins in portrait so cards dominate) */}
+      {/* 3D Perspective Card Table Surface */}
       <div
         className={`pointer-events-none absolute flex flex-col items-center justify-center ${
           isPortrait
@@ -155,9 +198,9 @@ export const FrontPerspectiveTable: React.FC<FrontPerspectiveTableProps> = ({
               className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-56 h-36 sm:w-80 sm:h-48 rounded-full opacity-20 blur-2xl transition-colors duration-300 ${colorStyle.bg}`}
             />
 
-            <div className="absolute inset-0 flex items-center justify-center opacity-[0.06]">
-              <span className="font-display font-black text-3xl sm:text-6xl tracking-[0.2em] text-amber-200">
-                UNO ARENA
+            <div className="absolute inset-0 flex items-center justify-center opacity-[0.065]">
+              <span className="font-display font-black text-3xl sm:text-6xl tracking-[0.18em] text-amber-200">
+                MABAR UNO
               </span>
             </div>
           </div>
@@ -293,6 +336,12 @@ export const FrontPerspectiveTable: React.FC<FrontPerspectiveTableProps> = ({
                 className={`pointer-events-none absolute -inset-4 rounded-2xl ring-4 ${colorStyle.ring} animate-color-burst`}
               />
             )}
+            {unoFlareKey && (
+              <div
+                key={`uno_flare_${unoFlareKey}`}
+                className="pointer-events-none absolute -inset-6 rounded-3xl ring-4 ring-amber-300 bg-amber-400/15 animate-uno-flare"
+              />
+            )}
 
             {prevDiscard && (
               <div className="absolute -rotate-12 -translate-x-3 translate-y-1.5 opacity-80 pointer-events-none">
@@ -321,7 +370,7 @@ export const FrontPerspectiveTable: React.FC<FrontPerspectiveTableProps> = ({
 
         {/* Center-Right: 3D Stacked Draw Pile + 48dp Touch Draw/Pass CTA */}
         <div
-          className="flex flex-col items-center gap-2 shrink-0"
+          className="relative flex flex-col items-center gap-2 shrink-0"
           style={{ transform: 'perspective(850px) rotateX(9deg)' }}
         >
           <div
@@ -346,6 +395,20 @@ export const FrontPerspectiveTable: React.FC<FrontPerspectiveTableProps> = ({
                   : 'shadow-[0_16px_30px_rgba(0,0,0,0.65)]'
               }
             />
+
+            {/* Lightweight flying drawn card cue */}
+            {flyingDraw && (
+              <div
+                key={`fly_${flyingDraw.key}`}
+                className={`pointer-events-none absolute inset-0 z-30 ${
+                  flyingDraw.toSelf
+                    ? 'animate-draw-fly-self'
+                    : 'animate-draw-fly-opponent'
+                }`}
+              >
+                <UnoCard faceDown size="table" />
+              </div>
+            )}
 
             <div className="mt-1.5 text-center text-xs font-mono-num font-bold text-emerald-100/90 drop-shadow">
               Deck: {drawPileCount}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { X } from 'lucide-react';
+import { MabarUnoLogo } from './MabarUnoLogo';
 import { UnoCard } from './UnoCard';
 
 interface HowToPlayModalProps {
@@ -15,15 +16,23 @@ export const HowToPlayModal: React.FC<HowToPlayModalProps> = ({ onClose }) => {
       aria-labelledby="howto-title"
     >
       <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-3xl bg-gradient-to-b from-[#0a3824] to-[#041d13] border border-emerald-400/30 shadow-[0_24px_64px_rgba(0,0,0,0.75)] p-5 sm:p-6 text-white">
-        <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-4">
-          <h2 id="howto-title" className="font-display font-extrabold text-lg sm:text-2xl text-amber-300">
-            Cara Bermain UNO ARENA
-          </h2>
+        <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-4 gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <MabarUnoLogo variant="icon" className="w-10 h-10 shrink-0" />
+            <div className="min-w-0">
+              <h2 id="howto-title" className="font-display font-extrabold text-lg sm:text-2xl text-amber-300 truncate">
+                Cara Bermain MABAR UNO
+              </h2>
+              <p className="text-[11px] sm:text-xs text-emerald-200/80">
+                MABAR = Main Bareng UNO · Offline Solo &amp; Wi-Fi Lokal
+              </p>
+            </div>
+          </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Tutup panduan"
-            className="min-w-[40px] min-h-[40px] rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white cursor-pointer"
+            className="min-w-[40px] min-h-[40px] rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white cursor-pointer shrink-0"
           >
             <X className="w-5 h-5" />
           </button>

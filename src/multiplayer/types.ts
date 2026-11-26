@@ -2,7 +2,12 @@ import {
   BotDifficulty,
   CardColor,
   ClientVisibleGameState,
+  GameEventLog,
+  MatchResult,
+  PlayerSummary,
+  PlayDirection,
   RoomRuleConfig,
+  UnoCard,
 } from '../engine/types';
 
 export type ConnectionMethod = 'WIFI_LAN' | 'WIFI_DIRECT';
@@ -40,6 +45,7 @@ export interface PlayerSession {
   isHost: boolean;
   isSpectator: boolean;
   connected: boolean;
+  disconnectedAt: number | null;
   lastHeartbeatAt: number;
 }
 
@@ -62,6 +68,7 @@ export interface RoomPublicSnapshot {
   rules: RoomRuleConfig;
   status: 'LOBBY' | 'IN_GAME' | 'FINISHED' | 'CLOSED';
   participants: RoomParticipantSummary[];
+  disconnectedPlayerIds?: string[];
 }
 
 export interface MultiplayerRoomConfig {
@@ -85,6 +92,33 @@ export type GameActionPayload =
   | { type: 'CALL_UNO' }
   | { type: 'CATCH_UNO'; targetPlayerId: string };
 
+export interface StateDeltaPayload {
+  prevVersion: number;
+  stateVersion: number;
+  roomStatus?: RoomPublicSnapshot['status'];
+  participantUpdates?: RoomParticipantSummary[];
+  selfHand?: UnoCard[];
+  selfCalledUno?: boolean;
+  players?: PlayerSummary[];
+  topDiscard?: UnoCard;
+  discardCount?: number;
+  drawPileCount?: number;
+  activeColor?: CardColor;
+  direction?: PlayDirection;
+  currentTurnPlayerId?: string;
+  pendingDrawCount?: number;
+  pendingDrawType?: 'draw2' | 'wild4' | null;
+  hasDrawnThisTurn?: boolean;
+  drawnCardIdThisTurn?: string | null;
+  turnCount?: number;
+  winnerId?: string | null;
+  matchResult?: MatchResult | null;
+  lastEvent?: GameEventLog | null;
+  pausedByDisconnect?: boolean;
+  pausedPlayerNames?: string[];
+  disconnectedPlayerIds?: string[];
+}
+
 export type ClientToHostMessage =
   | {
       type: 'JOIN_REQUEST';
@@ -104,7 +138,12 @@ export type ClientToHostMessage =
       type: 'GAME_ACTION';
       sessionId: string;
       actionId: string;
+      actionSeq?: number;
       action: GameActionPayload;
+    }
+  | {
+      type: 'RESYNC_REQUEST';
+      sessionId: string;
     }
   | {
       type: 'LEAVE_ROOM';
@@ -137,6 +176,10 @@ export type HostToClientMessage =
       type: 'STATE_SYNC';
       room: RoomPublicSnapshot;
       gameState: ClientVisibleGameState;
+    }
+  | {
+      type: 'STATE_DELTA';
+      delta: StateDeltaPayload;
     }
   | {
       type: 'ACTION_REJECTED';

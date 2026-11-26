@@ -76,58 +76,58 @@
     repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.015) 0px, rgba(255, 255, 255, 0.015) 2px, transparent 2px, transparent 6px);
 }
 
-/* Default / Portrait mobile-first card sizing (~30-35% larger for comfortable thumb play) */
+/* Balanced mobile-first card sizing: fits more hand cards comfortably while keeping touch targets crisp */
 .uno-card-hand-size {
-  width: clamp(92px, 24.5vw, 114px);
-  height: clamp(134px, 35.5vw, 166px);
+  width: clamp(74px, 19.5vw, 92px);
+  height: clamp(108px, 28.5vw, 134px);
 }
 .uno-card-table-size {
-  width: clamp(102px, 27vw, 124px);
-  height: clamp(148px, 39vw, 180px);
+  width: clamp(86px, 22.5vw, 108px);
+  height: clamp(125px, 32.5vw, 156px);
 }
 
 @media (orientation: portrait) and (max-height: 700px) {
   .uno-card-hand-size {
-    width: clamp(82px, 22vw, 96px);
-    height: clamp(120px, 32vw, 140px);
+    width: clamp(66px, 17.5vw, 82px);
+    height: clamp(96px, 25.5vw, 120px);
   }
   .uno-card-table-size {
-    width: clamp(92px, 24vw, 108px);
-    height: clamp(134px, 35vw, 156px);
+    width: clamp(78px, 20.5vw, 96px);
+    height: clamp(114px, 29.5vw, 140px);
   }
 }
 
 /* Landscape sizing (optimized for 2-8 player multiplayer) */
 @media (orientation: landscape) {
   .uno-card-hand-size {
-    width: 86px;
-    height: 126px;
+    width: 74px;
+    height: 108px;
   }
   .uno-card-table-size {
-    width: 96px;
-    height: 140px;
+    width: 84px;
+    height: 122px;
   }
 }
 
 @media (orientation: landscape) and (max-height: 450px) {
   .uno-card-hand-size {
-    width: 70px;
-    height: 102px;
+    width: 62px;
+    height: 90px;
   }
   .uno-card-table-size {
-    width: 78px;
-    height: 114px;
+    width: 72px;
+    height: 104px;
   }
 }
 
 @media (orientation: landscape) and (min-width: 1024px) and (min-height: 620px) {
   .uno-card-hand-size {
-    width: 102px;
-    height: 148px;
+    width: 88px;
+    height: 128px;
   }
   .uno-card-table-size {
-    width: 114px;
-    height: 166px;
+    width: 102px;
+    height: 148px;
   }
 }
 
@@ -146,7 +146,7 @@
 @keyframes cardDealIn {
   0% {
     opacity: 0;
-    transform: translateX(26px) translateY(-34px) scale(0.8);
+    transform: translateX(24px) translateY(-28px) scale(0.84);
   }
   100% {
     opacity: 1;
@@ -156,8 +156,12 @@
 
 @keyframes discardPop {
   0% {
-    opacity: 0.55;
-    transform: translateY(36px) scale(1.2) rotate(-9deg);
+    opacity: 0.5;
+    transform: translateY(42px) scale(1.16) rotate(-7deg);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1.02) rotate(1deg);
   }
   100% {
     opacity: 1;
@@ -174,6 +178,28 @@
   }
   100% {
     transform: scale(1);
+  }
+}
+
+@keyframes drawFlySelf {
+  0% {
+    opacity: 0.96;
+    transform: translate(0px, 0px) scale(0.95) rotate(-4deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-26px, 118px) scale(0.78) rotate(8deg);
+  }
+}
+
+@keyframes drawFlyOpponent {
+  0% {
+    opacity: 0.96;
+    transform: translate(0px, 0px) scale(0.9) rotate(4deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(0px, -110px) scale(0.68) rotate(-8deg);
   }
 }
 
@@ -218,8 +244,8 @@
 
 @keyframes turnBannerIn {
   0% {
-    opacity: 0.45;
-    transform: scale(0.94);
+    opacity: 0.5;
+    transform: scale(0.95);
   }
   100% {
     opacity: 1;
@@ -232,10 +258,40 @@
     transform: scale(1) rotate(0deg);
   }
   50% {
-    transform: scale(1.18) rotate(180deg);
+    transform: scale(1.22) rotate(180deg);
   }
   100% {
     transform: scale(1) rotate(360deg);
+  }
+}
+
+@keyframes seatBadgePop {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.75);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.08);
+  }
+  80% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.92);
+  }
+}
+
+@keyframes unoFlare {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.75);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.55);
   }
 }
 
@@ -255,15 +311,23 @@
 }
 
 .animate-card-deal {
-  animation: cardDealIn 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: cardDealIn 230ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .animate-discard-pop {
-  animation: discardPop 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: discardPop 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .animate-draw-pulse {
   animation: drawPilePulse 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-draw-fly-self {
+  animation: drawFlySelf 320ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-draw-fly-opponent {
+  animation: drawFlyOpponent 320ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 .animate-color-burst {
@@ -283,7 +347,15 @@
 }
 
 .animate-reverse-spin {
-  animation: reversePulse 340ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: reversePulse 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-seat-badge {
+  animation: seatBadgePop 1050ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-uno-flare {
+  animation: unoFlare 520ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .animate-confetti {
@@ -295,11 +367,15 @@
   .animate-card-deal,
   .animate-discard-pop,
   .animate-draw-pulse,
+  .animate-draw-fly-self,
+  .animate-draw-fly-opponent,
   .animate-color-burst,
   .animate-special-shimmer,
   .animate-effect-float,
   .animate-turn-pop,
   .animate-reverse-spin,
+  .animate-seat-badge,
+  .animate-uno-flare,
   .animate-confetti {
     animation: none !important;
   }

@@ -8,7 +8,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { HowToPlayModal } from '../components/HowToPlayModal';
-import { UnoArenaLogo } from '../components/UnoArenaLogo';
+import { MabarUnoLogo } from '../components/MabarUnoLogo';
 import { UnoMenuHeroIllustration } from '../components/UnoMenuHeroIllustration';
 import { MatchHistoryRecord } from '../storage/types';
 import { soundEngine } from '../utilities/soundEngine';
@@ -63,7 +63,7 @@ export const MainMenuScreen: React.FC<MainMenuScreenProps> = ({
       {bgLoaded && (
         <img
           src={ARENA_HERO_BG}
-          alt="Meja permainan kartu hijau UNO Arena dengan pencahayaan arena"
+          alt="Meja permainan kartu hijau MABAR UNO dengan pencahayaan arena"
           referrerPolicy="no-referrer"
           onError={() => setBgLoaded(false)}
           className="pointer-events-none absolute inset-0 w-full h-full object-cover object-center opacity-55"
@@ -124,15 +124,15 @@ export const MainMenuScreen: React.FC<MainMenuScreenProps> = ({
         {/* Left/Bottom Column: Brand + Four Primary Menu Buttons */}
         <div className="md:col-span-6 lg:col-span-6 flex flex-col items-center md:items-start text-center md:text-left justify-center max-w-xl mx-auto md:mx-0 w-full">
           <div className="mb-2 sm:mb-3">
-            <UnoArenaLogo
+            <MabarUnoLogo
               variant="horizontal"
-              className="w-60 sm:w-80 lg:w-96 h-auto drop-shadow-[0_12px_24px_rgba(0,0,0,0.65)]"
+              className="w-64 sm:w-80 lg:w-96 h-auto drop-shadow-[0_12px_24px_rgba(0,0,0,0.65)]"
             />
           </div>
 
           <p className="text-xs sm:text-sm lg:text-base text-emerald-100/85 max-w-md mb-4 leading-relaxed">
-            Duduk di meja arena kartu UNO offline. Lawan BOT cerdas atau
-            mainkan bersama teman lewat Wi-Fi LAN &amp; Wi-Fi Direct tanpa
+            MABAR UNO (Main Bareng UNO) — Bermain solo melawan BOT cerdas atau
+            seru-seruan bersama teman lewat Wi-Fi LAN &amp; Wi-Fi Direct tanpa
             internet.
           </p>
 

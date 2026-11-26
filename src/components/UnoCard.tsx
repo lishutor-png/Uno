@@ -111,11 +111,11 @@ function CenterArtwork({
   activeWildColor?: CardColor;
 }) {
   const isLarge = size === 'table' || size === 'hand';
-  const iconDim = isLarge ? 'w-10 h-10 sm:w-12 sm:h-12' : 'w-6 h-6';
+  const iconDim = isLarge ? 'w-9 h-9 sm:w-11 sm:h-11' : 'w-6 h-6';
 
   if (card.value === 'wild') {
     return (
-      <div className="relative flex items-center justify-center w-10 h-12 sm:w-12 sm:h-16 rounded-full overflow-hidden border-2 border-white shadow-md">
+      <div className="relative flex items-center justify-center w-9 h-11 sm:w-11 sm:h-14 rounded-full overflow-hidden border-2 border-white shadow-md">
         <div className="grid grid-cols-2 grid-rows-2 w-full h-full">
           <div className="bg-[#dc2626]" />
           <div className="bg-[#2563eb]" />
@@ -133,12 +133,12 @@ function CenterArtwork({
 
   if (card.value === 'wild4') {
     return (
-      <div className="relative flex items-center justify-center w-11 h-12 sm:w-14 sm:h-16">
+      <div className="relative flex items-center justify-center w-10 h-11 sm:w-12 sm:h-14">
         <div className="grid grid-cols-2 gap-0.5 rotate-[-8deg]">
-          <span className="w-3 h-4 sm:w-4 sm:h-6 rounded-[3px] bg-[#dc2626] border border-white shadow" />
-          <span className="w-3 h-4 sm:w-4 sm:h-6 rounded-[3px] bg-[#2563eb] border border-white shadow translate-y-1" />
-          <span className="w-3 h-4 sm:w-4 sm:h-6 rounded-[3px] bg-[#eab308] border border-white shadow -translate-y-0.5" />
-          <span className="w-3 h-4 sm:w-4 sm:h-6 rounded-[3px] bg-[#16a34a] border border-white shadow translate-y-0.5" />
+          <span className="w-3 h-4 sm:w-3.5 sm:h-5 rounded-[3px] bg-[#dc2626] border border-white shadow" />
+          <span className="w-3 h-4 sm:w-3.5 sm:h-5 rounded-[3px] bg-[#2563eb] border border-white shadow translate-y-1" />
+          <span className="w-3 h-4 sm:w-3.5 sm:h-5 rounded-[3px] bg-[#eab308] border border-white shadow -translate-y-0.5" />
+          <span className="w-3 h-4 sm:w-3.5 sm:h-5 rounded-[3px] bg-[#16a34a] border border-white shadow translate-y-0.5" />
         </div>
         {activeWildColor && (
           <span
@@ -179,8 +179,8 @@ function CenterArtwork({
   if (card.value === 'draw2') {
     return (
       <div className="relative flex items-center justify-center">
-        <div className="w-4 h-6 sm:w-6 sm:h-8 rounded-[4px] bg-current opacity-85 border-2 border-white -translate-x-1.5 translate-y-1 shadow-sm" />
-        <div className="w-4 h-6 sm:w-6 sm:h-8 rounded-[4px] bg-current border-2 border-white translate-x-1.5 -translate-y-1 shadow-md" />
+        <div className="w-4 h-6 sm:w-5 sm:h-7 rounded-[4px] bg-current opacity-85 border-2 border-white -translate-x-1.5 translate-y-1 shadow-sm" />
+        <div className="w-4 h-6 sm:w-5 sm:h-7 rounded-[4px] bg-current border-2 border-white translate-x-1.5 -translate-y-1 shadow-md" />
       </div>
     );
   }
@@ -190,9 +190,9 @@ function CenterArtwork({
     <span
       className={`font-display font-black leading-none tracking-tight drop-shadow-sm ${
         size === 'table'
-          ? 'text-4xl sm:text-5xl'
+          ? 'text-3xl sm:text-4xl'
           : size === 'hand'
-            ? 'text-4xl sm:text-5xl'
+            ? 'text-3xl sm:text-4xl'
             : 'text-2xl'
       } ${needsUnderline ? 'underline decoration-[3px] underline-offset-2' : ''}`}
     >
@@ -201,7 +201,7 @@ function CenterArtwork({
   );
 }
 
-export const UnoCard: React.FC<UnoCardProps> = ({
+const UnoCardComponent: React.FC<UnoCardProps> = ({
   card,
   faceDown = false,
   size = 'hand',
@@ -292,7 +292,7 @@ export const UnoCard: React.FC<UnoCardProps> = ({
 
       {/* Top-left corner index */}
       <div
-        className={`absolute top-1.5 left-2 text-sm sm:text-base font-black drop-shadow-sm ${cornerTextColor}`}
+        className={`absolute top-1 left-1.5 text-xs sm:text-sm font-black drop-shadow-sm ${cornerTextColor}`}
       >
         <CornerSymbol card={card} />
       </div>
@@ -312,10 +312,12 @@ export const UnoCard: React.FC<UnoCardProps> = ({
 
       {/* Bottom-right corner index */}
       <div
-        className={`absolute bottom-1.5 right-2 rotate-180 text-sm sm:text-base font-black drop-shadow-sm ${cornerTextColor}`}
+        className={`absolute bottom-1 right-1.5 rotate-180 text-xs sm:text-sm font-black drop-shadow-sm ${cornerTextColor}`}
       >
         <CornerSymbol card={card} />
       </div>
     </Tag>
   );
 };
+
+export const UnoCard = React.memo(UnoCardComponent);

@@ -64,6 +64,8 @@ export interface GameEventLog {
   timestamp: number;
   actorId: string;
   actorName: string;
+  targetPlayerId?: string;
+  targetPlayerName?: string;
   type:
     | 'GAME_START'
     | 'PLAY_CARD'
@@ -144,6 +146,10 @@ export interface ClientVisibleGameState {
   winnerId: string | null;
   matchResult: MatchResult | null;
   lastEvent: GameEventLog | null;
+  stateVersion?: number;
+  pausedByDisconnect?: boolean;
+  pausedPlayerNames?: string[];
+  disconnectedPlayerIds?: string[];
 }
 
 export interface SinglePlayerSetupConfig {

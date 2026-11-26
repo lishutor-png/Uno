@@ -1,5 +1,5 @@
 /**
- * Procedural Web Audio API sound synthesizer for UNO Arena.
+ * Procedural Web Audio API sound synthesizer for MABAR UNO.
  * Combines filtered noise bursts (cardstock snap/slide) with warm harmonic chimes.
  * Zero external audio dependencies, offline-safe, with instant mute toggle.
  */

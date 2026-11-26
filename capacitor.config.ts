@@ -7,7 +7,7 @@
  */
 const config = {
   appId: 'com.unoarena.game',
-  appName: 'UNO Arena',
+  appName: 'MABAR UNO',
   webDir: 'dist',
   server: {
     androidScheme: 'https',

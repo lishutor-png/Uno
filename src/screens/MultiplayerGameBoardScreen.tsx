@@ -1,10 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowUpDown,
   Layers,
   LogOut,
+  RefreshCw,
   Volume2,
   VolumeX,
+  WifiOff,
 } from 'lucide-react';
 import { sortHandByColor } from '../engine/gameEngine';
 import { getPlayableCards } from '../engine/rules';
@@ -31,7 +34,7 @@ import {
   FrontPerspectiveTable,
   useIsPortrait,
 } from '../components/FrontPerspectiveTable';
-import { OpponentSeat } from '../components/OpponentSeat';
+import { OpponentSeat, SeatEventBadge } from '../components/OpponentSeat';
 import { PlayerHand } from '../components/PlayerHand';
 import { SpecialEffectBanner } from '../components/SpecialEffectBanner';
 import { VictoryConfetti } from '../components/VictoryConfetti';
@@ -82,22 +85,32 @@ export const MultiplayerGameBoardScreen: React.FC<
     actorName: string;
     chosenColor?: CardColor;
   } | null>(null);
+  const [seatEventMap, setSeatEventMap] = useState<
+    Record<string, SeatEventBadge>
+  >({});
 
   const lastEventIdRef = useRef<string | null>(null);
+  const lastHostVersionRef = useRef<number>(initialView.stateVersion ?? 0);
   const finishedRef = useRef(false);
 
-  // Wire Host Manager updates & heartbeat/bot loops when HOST
+  // Wire Host Manager updates & dirty-checked heartbeat/bot loops when HOST
   useEffect(() => {
     if (role !== 'HOST' || !hostManager) return;
 
     const refreshHost = () => {
-      const nextView = hostManager.getHostVisibleGameState();
-      if (nextView) setView(nextView);
+      const nextVersion = hostManager.getStateVersion();
+      if (nextVersion !== lastHostVersionRef.current) {
+        lastHostVersionRef.current = nextVersion;
+        const nextView = hostManager.getHostVisibleGameState();
+        if (nextView) setView(nextView);
+      }
     };
 
     const hbInterval = window.setInterval(() => {
-      hostManager.checkHeartbeats();
-      refreshHost();
+      const changed = hostManager.checkHeartbeats();
+      if (changed) {
+        refreshHost();
+      }
     }, 2000);
 
     const botInterval = window.setInterval(() => {
@@ -112,7 +125,7 @@ export const MultiplayerGameBoardScreen: React.FC<
     };
   }, [role, hostManager]);
 
-  // Trigger audio & effect banners on new game events
+  // Trigger audio, floating effect banners, and opponent seat cues on new game events
   useEffect(() => {
     const evt = view.lastEvent;
     if (!evt || evt.id === lastEventIdRef.current) return;
@@ -137,8 +150,49 @@ export const MultiplayerGameBoardScreen: React.FC<
         actorName: evt.actorName,
         chosenColor: evt.chosenColor,
       });
+
+      const nextSeatMap: Record<string, SeatEventBadge> = {};
+      if (evt.effectType === 'SKIP' && evt.targetPlayerId) {
+        nextSeatMap[evt.targetPlayerId] = {
+          key: evt.id,
+          label: 'DILEWATI!',
+          tone: 'skip',
+        };
+      } else if (evt.effectType === 'DRAW2' && evt.targetPlayerId) {
+        nextSeatMap[evt.targetPlayerId] = {
+          key: evt.id,
+          label: '+2 KARTU!',
+          tone: 'penalty',
+        };
+      } else if (evt.effectType === 'WILD4' && evt.targetPlayerId) {
+        nextSeatMap[evt.targetPlayerId] = {
+          key: evt.id,
+          label: '+4 KARTU!',
+          tone: 'penalty',
+        };
+      } else if (evt.effectType === 'PENALTY' && evt.targetPlayerId) {
+        nextSeatMap[evt.targetPlayerId] = {
+          key: evt.id,
+          label: 'PENALTI +2!',
+          tone: 'penalty',
+        };
+      } else if (evt.effectType === 'UNO') {
+        nextSeatMap[evt.actorId] = {
+          key: evt.id,
+          label: 'UNO!',
+          tone: 'uno',
+        };
+      }
+      if (Object.keys(nextSeatMap).length > 0) {
+        setSeatEventMap(nextSeatMap);
+      }
+
       const timer = window.setTimeout(() => {
         setActiveEffect((curr) => (curr?.key === evt.id ? null : curr));
+        setSeatEventMap((curr) => {
+          const first = Object.values(curr)[0];
+          return first?.key === evt.id ? {} : curr;
+        });
       }, 1150);
       return () => window.clearTimeout(timer);
     }
@@ -185,6 +239,17 @@ export const MultiplayerGameBoardScreen: React.FC<
   const isSpectator =
     role === 'HOST' && hostManager?.config.hostMode === 'SPECTATOR';
 
+  const isClientDisconnected =
+    role === 'CLIENT' &&
+    Boolean(
+      clientStatus &&
+        (clientStatus.status === 'RECONNECTING' ||
+          clientStatus.status === 'DISCONNECTED' ||
+          clientStatus.status === 'ERROR')
+    );
+
+  const isPausedByDisconnect = Boolean(view.pausedByDisconnect);
+
   const displayedHand = useMemo(() => {
     if (!sortOrderIds) return view.selfHand;
     const rank = new Map(sortOrderIds.map((id, idx) => [id, idx]));
@@ -197,6 +262,8 @@ export const MultiplayerGameBoardScreen: React.FC<
 
   const isMyTurn =
     !isSpectator &&
+    !isClientDisconnected &&
+    !isPausedByDisconnect &&
     !view.winnerId &&
     view.currentTurnPlayerId === view.selfPlayerId;
 
@@ -216,6 +283,7 @@ export const MultiplayerGameBoardScreen: React.FC<
 
   const dispatchAction = useCallback(
     (action: GameActionPayload) => {
+      if (isClientDisconnected) return;
       if (role === 'HOST' && hostManager) {
         const res = hostManager.applyHostLocalAction(
           `host_act_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -225,6 +293,7 @@ export const MultiplayerGameBoardScreen: React.FC<
           setActionToast(res.error);
           window.setTimeout(() => setActionToast(null), 2400);
         } else {
+          lastHostVersionRef.current = hostManager.getStateVersion();
           const next = hostManager.getHostVisibleGameState();
           if (next) setView(next);
         }
@@ -232,7 +301,7 @@ export const MultiplayerGameBoardScreen: React.FC<
         lanClient.sendGameAction(action);
       }
     },
-    [role, hostManager, lanClient]
+    [role, hostManager, lanClient, isClientDisconnected]
   );
 
   const handleExit = () => {
@@ -246,12 +315,26 @@ export const MultiplayerGameBoardScreen: React.FC<
     onExitToMenu();
   };
 
-  const opponents = view.players.filter((p) => p.id !== view.selfPlayerId);
+  const disconnectedSet = useMemo(
+    () => new Set(view.disconnectedPlayerIds ?? []),
+    [view.disconnectedPlayerIds]
+  );
+
+  const opponents = view.players
+    .filter((p) => p.id !== view.selfPlayerId)
+    .map((p) => ({
+      ...p,
+      connected: !disconnectedSet.has(p.id),
+    }));
+
   const currentTurnPlayer = view.players.find(
     (p) => p.id === view.currentTurnPlayerId
   );
+
   const canPressUno =
     !isSpectator &&
+    !isClientDisconnected &&
+    !isPausedByDisconnect &&
     !view.winnerId &&
     view.selfHand.length <= 2 &&
     view.selfHand.length >= 1 &&
@@ -262,17 +345,19 @@ export const MultiplayerGameBoardScreen: React.FC<
       <FrontPerspectiveTable
         topBar={
           <>
-            <div className="flex items-center gap-2 text-xs text-emerald-100/85">
-              <span className="font-display font-extrabold text-amber-300 text-sm tracking-wide">
-                UNO ARENA
+            <div className="flex items-center gap-2 text-xs text-emerald-100/85 min-w-0">
+              <span className="font-display font-extrabold text-amber-300 text-sm tracking-wide shrink-0">
+                MABAR UNO
               </span>
               <span aria-hidden="true">·</span>
-              <span className="tabular-nums">
+              <span className="tabular-nums truncate">
                 {role === 'HOST'
                   ? 'Host Otoritatif'
                   : clientStatus?.status === 'RECONNECTING'
-                    ? 'Menghubungkan ulang...'
-                    : `Terhubung${clientStatus?.latencyMs ? ` · ${clientStatus.latencyMs}ms` : ''}`}
+                    ? 'Menyambungkan ulang...'
+                    : clientStatus?.status === 'DISCONNECTED'
+                      ? 'Terputus'
+                      : `Terhubung${clientStatus?.latencyMs ? ` · ${clientStatus.latencyMs}ms` : ''}`}
               </span>
             </div>
 
@@ -309,6 +394,7 @@ export const MultiplayerGameBoardScreen: React.FC<
             }
             canCatchUno={
               !isSpectator &&
+              !isClientDisconnected &&
               view.rules.unoPenalty &&
               opp.vulnerableToUnoPenalty &&
               opp.cardCount === 1
@@ -317,35 +403,82 @@ export const MultiplayerGameBoardScreen: React.FC<
               dispatchAction({ type: 'CATCH_UNO', targetPlayerId: targetId })
             }
             compact={opponents.length >= 4}
+            seatEvent={seatEventMap[opp.id] ?? null}
           />
         ))}
-        turnBanner={
-          <div className="flex flex-col items-center">
-            <div
-              className={`px-4 py-1 rounded-xl border text-xs sm:text-sm font-display font-bold shadow-md ${
-                isMyTurn
-                  ? 'bg-emerald-950/95 text-amber-300 border-amber-400/75'
-                  : 'bg-black/55 text-emerald-100 border-white/10'
-              }`}
-            >
-              {view.winnerId
-                ? `Pemenang: ${view.matchResult?.winnerName}`
-                : isMyTurn
-                  ? `Giliran Kamu${view.pendingDrawCount > 0 ? ` · Tumpukan +${view.pendingDrawCount}` : ''}`
-                  : `Giliran ${currentTurnPlayer?.name ?? '...'}`}
+        turnBanner={(() => {
+          const mustDraw =
+            isMyTurn &&
+            (view.pendingDrawCount > 0 ||
+              (playableCardIds.size === 0 && !view.hasDrawnThisTurn));
+
+          const primaryLabel = view.winnerId
+            ? `GILIRAN BERAKHIR · Pemenang: ${view.matchResult?.winnerName}`
+            : isPausedByDisconnect
+              ? `DIJEDA · MENUNGGU ${(view.pausedPlayerNames?.[0] ?? 'PEMAIN').toUpperCase()} RECONNECT`
+              : pendingWildCard
+                ? 'PILIH WARNA'
+                : mustDraw
+                  ? `KAMU HARUS MENGAMBIL KARTU${view.pendingDrawCount > 0 ? ` (+${view.pendingDrawCount})` : ''}`
+                  : isMyTurn
+                    ? 'GILIRAN KAMU'
+                    : `GILIRAN ${(currentTurnPlayer?.name ?? '...').toUpperCase()}`;
+
+          const subLabel = view.winnerId
+            ? view.lastEvent?.message
+            : isPausedByDisconnect
+              ? 'Pemain yang sedang mendapat giliran mengalami gangguan koneksi. Slot & kartu tetap aman.'
+              : isMyTurn
+                ? pendingWildCard
+                  ? 'Pilih warna aktif meja untuk kartu Wild.'
+                  : mustDraw
+                    ? 'Tap tumpukan Deck atau tombol Ambil Kartu.'
+                    : view.lastEvent?.message
+                : `MENUNGGU PEMAIN LAIN · ${currentTurnPlayer?.isBot ? 'BOT sedang memilih kartu...' : view.lastEvent?.message ?? ''}`;
+
+          return (
+            <div className="flex flex-col items-center">
+              <div
+                className={`px-4 py-1.5 rounded-xl border text-xs sm:text-sm font-display font-extrabold tracking-wide shadow-md ${
+                  view.winnerId
+                    ? 'bg-amber-400 text-slate-950 border-amber-200'
+                    : isPausedByDisconnect
+                      ? 'bg-amber-950/95 text-amber-200 border-amber-400/80 ring-2 ring-amber-400/35'
+                      : isMyTurn
+                        ? mustDraw
+                          ? 'bg-red-950/95 text-red-100 border-red-400/80 ring-2 ring-red-400/35'
+                          : 'bg-emerald-950/95 text-amber-300 border-amber-400/80 ring-2 ring-amber-400/30'
+                        : 'bg-black/60 text-emerald-100 border-white/15'
+                }`}
+              >
+                {primaryLabel}
+              </div>
+
+              {subLabel && (
+                <div className="mt-0.5 text-[11px] sm:text-xs text-emerald-100/85 truncate max-w-[92vw] sm:max-w-md drop-shadow">
+                  {subLabel}
+                </div>
+              )}
+
+              {!isPausedByDisconnect &&
+                (view.disconnectedPlayerIds?.length ?? 0) > 0 && (
+                  <div className="mt-1 rounded-lg bg-amber-950/90 border border-amber-400/60 px-3 py-1 text-[11px] font-semibold text-amber-200 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    <span>
+                      {(view.pausedPlayerNames ?? []).join(', ') || 'Pemain'}{' '}
+                      mengalami gangguan koneksi (menunggu reconnect)
+                    </span>
+                  </div>
+                )}
+
+              {actionToast && (
+                <div className="mt-1 rounded-lg bg-red-900/90 border border-red-400 px-3 py-1 text-xs font-semibold text-white">
+                  {actionToast}
+                </div>
+              )}
             </div>
-            {view.lastEvent && (
-              <div className="mt-0.5 text-[11px] sm:text-xs text-emerald-100/85 truncate max-w-md drop-shadow">
-                {view.lastEvent.message}
-              </div>
-            )}
-            {actionToast && (
-              <div className="mt-1 rounded-lg bg-red-900/90 border border-red-400 px-3 py-1 text-xs font-semibold text-white">
-                {actionToast}
-              </div>
-            )}
-          </div>
-        }
+          );
+        })()}
         topDiscard={view.topDiscard}
         activeColor={view.activeColor}
         direction={view.direction}
@@ -359,6 +492,8 @@ export const MultiplayerGameBoardScreen: React.FC<
         onDrawCard={() => dispatchAction({ type: 'DRAW_CARD' })}
         onPassTurn={() => dispatchAction({ type: 'PASS_TURN' })}
         isMyTurn={isMyTurn}
+        lastEvent={view.lastEvent}
+        selfPlayerId={view.selfPlayerId}
         bottomDock={
           isSpectator ? (
             <footer className="relative z-30 px-4 py-4 safe-pb bg-black/70 border-t border-white/10 text-center text-xs sm:text-sm text-emerald-100">
@@ -484,6 +619,74 @@ export const MultiplayerGameBoardScreen: React.FC<
           }}
           onCancel={() => setPendingWildCard(null)}
         />
+      )}
+
+      {/* Client Disconnect / Reconnecting / Host-Closed Recovery Overlay */}
+      {isClientDisconnected && clientStatus && (
+        <div
+          className="fixed inset-0 z-50 bg-black/82 backdrop-blur-sm flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="disconnect-modal-title"
+        >
+          <div className="w-full max-w-md rounded-3xl bg-gradient-to-b from-[#0a3824] to-[#041d13] border border-red-400/50 shadow-2xl p-5 sm:p-6 text-white space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-red-600/25 border border-red-400/50 flex items-center justify-center shrink-0">
+                <WifiOff className="w-6 h-6 text-red-300" />
+              </div>
+              <div>
+                <h2
+                  id="disconnect-modal-title"
+                  className="font-display font-black text-lg sm:text-xl text-red-300 tracking-wide"
+                >
+                  KONEKSI TERPUTUS
+                </h2>
+                <p className="text-xs sm:text-sm text-emerald-100/90">
+                  {clientStatus.status === 'RECONNECTING'
+                    ? 'Sedang mencoba menyambungkan kembali...'
+                    : clientStatus.isHostDead
+                      ? 'Permainan tidak dapat dilanjutkan karena Host terputus.'
+                      : 'Sambungan Wi-Fi ke perangkat Host terputus.'}
+                </p>
+              </div>
+            </div>
+
+            {clientStatus.errorMessage && (
+              <div className="rounded-xl bg-black/45 border border-white/10 px-3.5 py-2.5 text-xs text-emerald-100/85 leading-relaxed">
+                {clientStatus.errorMessage}
+              </div>
+            )}
+
+            <div className="space-y-2.5 pt-1">
+              {!clientStatus.errorMessage?.includes('mengakhiri') &&
+                !clientStatus.errorMessage?.includes('menutup pertandingan') && (
+                  <button
+                    type="button"
+                    onClick={() => lanClient?.reconnectNow()}
+                    className="min-h-[48px] w-full rounded-xl bg-amber-400 hover:bg-amber-300 border-b-4 border-amber-600 active:translate-y-0.5 text-slate-950 font-display font-extrabold text-sm flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 ${
+                        clientStatus.status === 'RECONNECTING'
+                          ? 'animate-spin'
+                          : ''
+                      }`}
+                    />
+                    <span>COBA SAMBUNGKAN KEMBALI</span>
+                  </button>
+                )}
+
+              <button
+                type="button"
+                onClick={handleExit}
+                className="min-h-[46px] w-full rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-sm font-bold text-white flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>KEMBALI KE LOBBY</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

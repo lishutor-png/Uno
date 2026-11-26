@@ -652,3 +652,319 @@ test('Wi-Fi Direct helpers memprioritaskan IP Group Owner, menerjemahkan error, 
   );
 });
 
+test('Deduplikasi actionId & actionSeq mencegah aksi ganda dan double turn', () => {
+  const transport = new InMemoryTransport();
+  const manager = new HostRoomManager(
+    {
+      roomId: 'rm_dedup_1',
+      roomCode: 'DEDUP1',
+      roomAuthToken: 'tok_dedup',
+      maxPlayers: 2,
+      hostMode: 'PLAYER',
+      hostName: 'HostA',
+      fillEmptyWithBots: false,
+      botDifficulty: 'normal',
+      connectionMethod: 'WIFI_LAN',
+      port: 8765,
+      rules: CLASSIC_RULES,
+    },
+    transport
+  );
+
+  manager.handleClientMessage(
+    'conn_2',
+    JSON.stringify({
+      type: 'JOIN_REQUEST',
+      roomCode: 'DEDUP1',
+      roomAuthToken: 'tok_dedup',
+      playerName: 'ClientB',
+    })
+  );
+  const joined = transport.lastMessage('conn_2');
+  assert.equal(joined?.type, 'JOIN_ACCEPTED');
+  if (joined?.type !== 'JOIN_ACCEPTED') return;
+
+  manager.startGame();
+
+  // Host plays or draws once so turn moves to ClientB
+  const authBefore = manager.getAuthoritativeGameState()!;
+  const hostPlayable = getPlayableCards(authBefore.players[0].hand, authBefore);
+  if (hostPlayable.length > 0) {
+    manager.applyHostLocalAction('host_mv_1', {
+      type: 'PLAY_CARD',
+      cardId: hostPlayable[0].id,
+      chosenColor: hostPlayable[0].color === 'wild' ? 'red' : undefined,
+    });
+  } else {
+    manager.applyHostLocalAction('host_dr_1', { type: 'DRAW_CARD' });
+    const afterHostDraw = manager.getAuthoritativeGameState()!;
+    if (
+      afterHostDraw.players[afterHostDraw.currentTurnIndex].id === 'player_host' &&
+      afterHostDraw.hasDrawnThisTurn
+    ) {
+      manager.applyHostLocalAction('host_ps_1', { type: 'PASS_TURN' });
+    }
+  }
+
+  // Ensure ClientB is active (or force turn to ClientB if host played Reverse/Skip in 2p)
+  let current = manager.getAuthoritativeGameState()!;
+  if (current.players[current.currentTurnIndex].id !== joined.playerId) {
+    // Host got another turn due to Skip/Reverse in 2p -> draw & pass
+    manager.applyHostLocalAction('host_dr_2', { type: 'DRAW_CARD' });
+    current = manager.getAuthoritativeGameState()!;
+    if (current.hasDrawnThisTurn) {
+      manager.applyHostLocalAction('host_ps_2', { type: 'PASS_TURN' });
+    }
+  }
+
+  const beforeClientDraw = manager.getAuthoritativeGameState()!;
+  const clientPlayerIdx = beforeClientDraw.players.findIndex(
+    (p) => p.id === joined.playerId
+  );
+  if (beforeClientDraw.currentTurnIndex === clientPlayerIdx) {
+    const handLenBefore = beforeClientDraw.players[clientPlayerIdx].hand.length;
+    const versionBefore = manager.getStateVersion();
+
+    // Send DRAW_CARD with actionId='act_seq_1', actionSeq=1
+    manager.handleClientMessage(
+      'conn_2',
+      JSON.stringify({
+        type: 'GAME_ACTION',
+        sessionId: joined.sessionId,
+        actionId: 'act_seq_1',
+        actionSeq: 1,
+        action: { type: 'DRAW_CARD' },
+      })
+    );
+    const afterFirstDraw = manager.getAuthoritativeGameState()!;
+    assert.equal(afterFirstDraw.players[clientPlayerIdx].hand.length, handLenBefore + 1);
+    const versionAfterFirst = manager.getStateVersion();
+    assert.ok(versionAfterFirst > versionBefore);
+
+    // Duplicate exact same actionId -> must be ignored cleanly (no second draw, no error, no version bump)
+    manager.handleClientMessage(
+      'conn_2',
+      JSON.stringify({
+        type: 'GAME_ACTION',
+        sessionId: joined.sessionId,
+        actionId: 'act_seq_1',
+        actionSeq: 1,
+        action: { type: 'DRAW_CARD' },
+      })
+    );
+    // Duplicate older actionSeq with different actionId -> also ignored cleanly
+    manager.handleClientMessage(
+      'conn_2',
+      JSON.stringify({
+        type: 'GAME_ACTION',
+        sessionId: joined.sessionId,
+        actionId: 'act_seq_stale',
+        actionSeq: 1,
+        action: { type: 'DRAW_CARD' },
+      })
+    );
+
+    const afterDuplicate = manager.getAuthoritativeGameState()!;
+    assert.equal(afterDuplicate.players[clientPlayerIdx].hand.length, handLenBefore + 1);
+    assert.equal(manager.getStateVersion(), versionAfterFirst);
+    assert.notEqual(transport.lastMessage('conn_2')?.type, 'ACTION_REJECTED');
+  }
+});
+
+test('Putus koneksi saat giliran pemain menjeda pertandingan, mencegah bot jalan, dan pulih saat reconnect', () => {
+  const transport = new InMemoryTransport();
+  const manager = new HostRoomManager(
+    {
+      roomId: 'rm_pause_1',
+      roomCode: 'PAUSE1',
+      roomAuthToken: 'tok_pause',
+      maxPlayers: 3,
+      hostMode: 'SPECTATOR',
+      hostName: 'HostSpec',
+      fillEmptyWithBots: true,
+      botDifficulty: 'normal',
+      connectionMethod: 'WIFI_LAN',
+      port: 8765,
+      rules: CLASSIC_RULES,
+    },
+    transport
+  );
+
+  manager.handleClientMessage(
+    'conn_p1',
+    JSON.stringify({
+      type: 'JOIN_REQUEST',
+      roomCode: 'PAUSE1',
+      roomAuthToken: 'tok_pause',
+      playerName: 'Andi',
+    })
+  );
+  const p1Join = transport.lastMessage('conn_p1');
+  assert.equal(p1Join?.type, 'JOIN_ACCEPTED');
+  if (p1Join?.type !== 'JOIN_ACCEPTED') return;
+
+  manager.startGame();
+
+  // Andi is seat 0 -> it is Andi's turn right now!
+  const beforeDisconnect = manager.getHostVisibleGameState()!;
+  assert.equal(beforeDisconnect.currentTurnPlayerId, p1Join.playerId);
+  assert.equal(beforeDisconnect.pausedByDisconnect, false);
+
+  // Healthy heartbeat check must return false and send nothing extra
+  const msgCountBeforeHealthyCheck = transport.sentByConnection.get('conn_p1')?.length ?? 0;
+  assert.equal(manager.checkHeartbeats(Date.now()), false);
+  assert.equal(transport.sentByConnection.get('conn_p1')?.length ?? 0, msgCountBeforeHealthyCheck);
+
+  // Andi disconnects while it is Andi's turn -> game pauses & preserves Andi's 7 cards
+  manager.handleClientDisconnect('conn_p1');
+  const pausedView = manager.getHostVisibleGameState()!;
+  assert.equal(pausedView.pausedByDisconnect, true);
+  assert.deepEqual(pausedView.pausedPlayerNames, ['Andi']);
+  assert.deepEqual(pausedView.disconnectedPlayerIds, [p1Join.playerId]);
+  assert.equal(manager.stepBotTurnIfNeeded(), false);
+
+  // Andi reconnects -> full STATE_SYNC via JOIN_ACCEPTED, pause clears
+  manager.handleClientMessage(
+    'conn_p1_new',
+    JSON.stringify({
+      type: 'JOIN_REQUEST',
+      roomCode: 'PAUSE1',
+      roomAuthToken: 'tok_pause',
+      playerName: 'Andi',
+      reconnectToken: p1Join.reconnectToken,
+    })
+  );
+  const rejoined = transport.lastMessage('conn_p1_new');
+  assert.equal(rejoined?.type, 'JOIN_ACCEPTED');
+  if (rejoined?.type === 'JOIN_ACCEPTED') {
+    assert.equal(rejoined.gameState?.selfHand.length, 7);
+    assert.equal(rejoined.gameState?.pausedByDisconnect, false);
+    assert.deepEqual(rejoined.gameState?.disconnectedPlayerIds, []);
+  }
+});
+
+test('Sinkronisasi STATE_DELTA, pemulihan RESYNC_REQUEST saat gap versi, dan penutupan room Host', async () => {
+  const globalAny = globalThis as unknown as {
+    window: Record<string, unknown>;
+  };
+  globalAny.window = {
+    setInterval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+  };
+
+  const senders = new Map<string, (txt: string) => void>();
+  const closers = new Map<string, () => void>();
+  const receivedTypes: string[] = [];
+  let manager: HostRoomManager;
+
+  const wsServer = await createLoopbackWsServer(
+    (id, send, close) => {
+      senders.set(id, send);
+      closers.set(id, close);
+    },
+    (id, text) => manager.handleClientMessage(id, text),
+    (id) => manager.handleClientDisconnect(id)
+  );
+
+  manager = new HostRoomManager(
+    {
+      roomId: 'rm_delta_1',
+      roomCode: 'DELTA1',
+      roomAuthToken: 'tok_delta',
+      maxPlayers: 2,
+      hostMode: 'PLAYER',
+      hostName: 'HostDelta',
+      fillEmptyWithBots: false,
+      botDifficulty: 'normal',
+      connectionMethod: 'WIFI_LAN',
+      port: wsServer.port,
+      rules: CLASSIC_RULES,
+    },
+    {
+      sendToClient(connectionId, payload) {
+        const parsed = JSON.parse(payload) as HostToClientMessage;
+        receivedTypes.push(parsed.type);
+        senders.get(connectionId)?.(payload);
+        return true;
+      },
+      kickClient(connectionId) {
+        closers.get(connectionId)?.();
+      },
+    }
+  );
+
+  await new Promise<void>((resolve, reject) => {
+    let kickedReason: string | null = null;
+    let phase: 'WAIT_START' | 'WAIT_DELTA' | 'WAIT_RESYNC' | 'WAIT_CLOSE' = 'WAIT_START';
+    let client: LanWebSocketClient;
+    let stateSyncCount = 0;
+
+    client = new LanWebSocketClient({
+      hostIp: '127.0.0.1',
+      port: wsServer.port,
+      roomCode: 'DELTA1',
+      roomAuthToken: 'tok_delta',
+      playerName: 'ClientDelta',
+      onKickedOrClosed: (reason) => {
+        kickedReason = reason;
+      },
+      onStateChange: (s) => {
+        if (s.status === 'ERROR') {
+          client.destroy();
+          reject(new Error(s.errorMessage ?? 'Unexpected error'));
+          return;
+        }
+        if (phase === 'WAIT_START' && s.status === 'AUTHENTICATED' && !s.gameState) {
+          phase = 'WAIT_DELTA';
+          manager.startGame();
+          return;
+        }
+        if (phase === 'WAIT_DELTA' && s.gameState?.stateVersion === 1) {
+          stateSyncCount = receivedTypes.filter((t) => t === 'STATE_SYNC').length;
+          // Host draws a card -> should send STATE_DELTA (version 1 -> 2)
+          manager.applyHostLocalAction('delta_host_draw', { type: 'DRAW_CARD' });
+          return;
+        }
+        if (phase === 'WAIT_DELTA' && s.gameState?.stateVersion === 2) {
+          assert.ok(receivedTypes.includes('STATE_DELTA'));
+          phase = 'WAIT_RESYNC';
+          // Inject a version-gap STATE_DELTA to verify client automatically sends RESYNC_REQUEST -> STATE_SYNC
+          const connId = Array.from(senders.keys())[0];
+          senders.get(connId)?.(
+            JSON.stringify({
+              type: 'STATE_DELTA',
+              delta: {
+                prevVersion: 99,
+                stateVersion: 100,
+                drawPileCount: 1,
+              },
+            })
+          );
+          return;
+        }
+        if (
+          phase === 'WAIT_RESYNC' &&
+          s.gameState?.stateVersion === 2 &&
+          receivedTypes.filter((t) => t === 'STATE_SYNC').length > stateSyncCount
+        ) {
+          phase = 'WAIT_CLOSE';
+          manager.closeRoom('Host menutup sesi uji');
+          return;
+        }
+        if (phase === 'WAIT_CLOSE' && s.status === 'DISCONNECTED' && s.isHostDead) {
+          assert.equal(kickedReason, 'Host menutup sesi uji');
+          client.destroy();
+          resolve();
+        }
+      },
+    });
+
+    client.connect();
+  });
+
+  await wsServer.closeAll();
+});
+
+
