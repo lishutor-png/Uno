@@ -328,6 +328,11 @@ function createLoopbackWsServer(
         closeAll: () =>
           new Promise((res) => {
             for (const s of sockets.values()) s.destroy();
+            sockets.clear();
+            const srv = server as http.Server & {
+              closeAllConnections?: () => void;
+            };
+            srv.closeAllConnections?.();
             server.close(() => res());
           }),
       });

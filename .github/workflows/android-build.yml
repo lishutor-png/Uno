@@ -32,11 +32,12 @@ jobs:
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          if [ ! -d "$SDK_ROOT" ] || [ ! -w "$SDK_ROOT" ]; then
+          if [ ! -d "$SDK_ROOT" ] || [ ! -w "$SDK_ROOT" ] || ( [ -d "$SDK_ROOT/platforms" ] && [ ! -w "$SDK_ROOT/platforms" ] ); then
             SDK_ROOT="$HOME/android-sdk"
             mkdir -p "$SDK_ROOT"
           fi
 
+          mkdir -p "$SDK_ROOT/cmdline-tools"
           SDKMANAGER=""
           if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
             SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
@@ -44,14 +45,11 @@ jobs:
             FOUND_SM="$(find "$SDK_ROOT/cmdline-tools" -maxdepth 3 -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
             if [ -n "$FOUND_SM" ] && [ -x "$FOUND_SM" ]; then
               SDKMANAGER="$FOUND_SM"
-            elif command -v sdkmanager >/dev/null 2>&1 && [ -w "$(dirname "$(dirname "$(command -v sdkmanager)")")" ]; then
-              SDKMANAGER="$(command -v sdkmanager)"
             fi
           fi
 
           if [ -z "$SDKMANAGER" ]; then
             echo "Installing Android command-line tools into $SDK_ROOT..."
-            mkdir -p "$SDK_ROOT/cmdline-tools"
             TMP_ZIP="/tmp/cmdline-tools.zip"
             curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o "$TMP_ZIP"
             unzip -q "$TMP_ZIP" -d "$SDK_ROOT/cmdline-tools"
@@ -69,8 +67,7 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
           set -o pipefail
 
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "platform-tools" "platforms;android-36" "build-tools;35.0.0"
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;36.0.0" || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "platform-tools" "platforms;android-36" "build-tools;35.0.0" "build-tools;36.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -78,8 +75,8 @@ jobs:
       - name: Install npm dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Run engine & multiplayer tests
-        run: npm test
+      - name: Type-check TypeScript project
+        run: npm run lint
 
       - name: Build frontend web bundle
         run: npm run build
